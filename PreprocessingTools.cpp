@@ -13,6 +13,8 @@ PreprocessTools::PreprocessTools()
 	PGCamParamFolderVec.push_back("/RM");
 	PGCamParamFolderVec.push_back("/RMT");
 	PGCamParamFolderVec.push_back("/RT");
+	curCameraType = -1;
+	paramLoaded = false;
 	
 }
 
@@ -154,7 +156,7 @@ cv::Mat PreprocessTools::loadBGRImgBasedOnCameraType(int cameraType, std::string
 	return colorImg;
 }
 
-bool PreprocessTools::loadPGStereoPairs(int cameraType, int plantSide, std::string prefixFileName, std::vector<cv::Mat>& stereoPairVec)
+bool PreprocessTools::loadPGStereoPairs(int cameraType, int plantSide, int numImg, std::string prefixFileName, std::vector<cv::Mat>& stereoPairVec)
 {
 	stereoPairVec.clear();
 
@@ -162,8 +164,11 @@ bool PreprocessTools::loadPGStereoPairs(int cameraType, int plantSide, std::stri
 	{
 		if (plantSide == RIGHT)
 		{
-			for (int i = 0; i < 6; i++)
+			for (int i = 0; i < numImg; i++)
 			{
+				//std::ostringstream s;
+				//s << i;
+				//std::string i_as_string(s.str());
 				cv::Mat img = loadBGRImgBasedOnCameraType(PG, prefixFileName + std::to_string(i) + ".pgm");
 
 				if (img.data != NULL)
@@ -176,8 +181,11 @@ bool PreprocessTools::loadPGStereoPairs(int cameraType, int plantSide, std::stri
 		}
 		else if (plantSide == LEFT)
 		{
-			for (int i = 6; i < 12; i++)
+			for (int i = 6; i < 6 + numImg; i++)
 			{
+				//std::ostringstream s;
+				//s << i;
+				//std::string i_as_string(s.str());
 				cv::Mat img = loadBGRImgBasedOnCameraType(PG, prefixFileName + std::to_string(i) + ".pgm");
 
 				if (img.data != NULL)

@@ -9,6 +9,7 @@
 #include <string>
 #include <iostream>
 #include <map>
+#include <sstream>
 //#include <Windows.h>
 
 
@@ -18,7 +19,7 @@ public:
 	cv::Mat M1, D1, M2, D2;
 	cv::Mat R, T, R1, P1, R2, P2, Q;
 
-	int curCameraType = -1;
+	int curCameraType;
 
 	
 
@@ -43,7 +44,7 @@ public:
 
 	std::vector<cv::Mat> stereoPairVec;
 
-	bool paramLoaded = false;
+	bool paramLoaded;
 
 	PreprocessTools();
 
@@ -55,7 +56,7 @@ public:
 
 	cv::Mat loadBGRImgBasedOnCameraType(int cameraType, std::string fileName);
 
-	bool loadPGStereoPairs(int cameraType, int plantSide, std::string prefixFileName, std::vector<cv::Mat>& stereoPairVec);
+	bool loadPGStereoPairs(int cameraType, int plantSide, int numImg, std::string prefixFileName, std::vector<cv::Mat>& stereoPairVec);
 
 
 	bool rectifyStereoPair(int cameraType, int stereoHeadIdx, cv::Mat leftCImg, cv::Mat rightCImg, std::vector<cv::Mat>& outStereoPairVec, bool showImage, bool histEq, double scale);
