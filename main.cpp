@@ -1,6 +1,7 @@
 //unix
 #include <unistd.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 //#define NOMINMAX
 //include PCL before OPENCV there is a naming ambiguity
@@ -64,7 +65,7 @@ typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointCloud<PointT> PointCloud;
 typedef pcl::PointNormal PointNormalT;
 typedef pcl::PointCloud<PointNormalT> PointCloudWithNormals;
-std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> pcl_pcVec;
+
 float pre_x = 0, pre_y = 0, pre_z = 0, Dist = 0;
 void pp_callback(const pcl::visualization::PointPickingEvent& event)
 {
@@ -115,17 +116,28 @@ const float minZ = 500.f;
 const float maxZ = 2000.f;
 int plantSide;
 std::vector<cv::Point> stalkEdgePoints4;
-std::vector<cv::Mat> stereoPairs;
+
 int maxDisp = 150;
 bool measure_complete = false;
-int numSubBoxUsed = 16;
+int numSubBoxUsed = 20;
 double volumeThresh = 0.3;	//sub convex hull volume > 0.2*subAABB volume
 
+int wait_key_time = 100;
+int pcl_view_time = 100;
 
+
+FileStorage fs;
 
 // euclidean cluster param
 int clusterTolerance = 50;
 int minClusterSize = 400;
+
+// true if file exists
+bool fileExists(const std::string& file) {
+    struct stat buf;
+    return (stat(file.c_str(), &buf) == 0);
+}
+
 
 // name of data folder and number of images per location
 struct dataFolderImgNum
@@ -179,6 +191,7 @@ struct ImagePackage
 	std::vector<cv::Mat> origImgVec;
 	std::vector<cv::Mat> dispVec;
 	std::vector<cv::Mat> pointCloudVec;
+	std::vector<cv::Mat> stereoPairs;
 
 	int plantSide;
 	cv::Vec6f line;
@@ -289,6 +302,8 @@ void getCoordinatesCallBack(int event, int x, int y, int flags, void* userdata)
 	if (event == cv::EVENT_LBUTTONDOWN)
 	{
 		ImagePackage *ip = (ImagePackage*)userdata;
+
+		std::vector<cv::Mat> stereoPairs = ip->stereoPairs;
 
 		if (task == HEIGHT)
 		{
@@ -641,29 +656,41 @@ void exit_handler(int s)
 {
 	 cv::destroyAllWindows();
 	 result.close();
+	 fs.release();
          printf("ctrl+c signal");
          exit(1); 
 }
 
 
+
+
 int main(int argc , char** argv)
 {
-	if(argc != 5)
+	if(argc != 6)
 	{
-		std::cout<<"Field ID: AH-0, CH1-1, CH2-2, AS-3, CSP-4, BURKEY-5, KELLY-6"<<'\n';
+		std::cout<<"range, row, date, field, plant base detect mode\n";
+		std::cout<<"Field ID: AH-0, CH1-1, CH2-2, AS-3, CSP-4, BURKEY-5, KELLY-6, A2016-7"<<'\n';
 		return 0;
 	}
 
+	fs.open("parameters.yml", FileStorage::READ);
+
+	fs["wait_key_time"] >> wait_key_time;
+
+	pt.view_time = wait_key_time;
+
+	fs["pcl_view_time"] >> pcl_view_time;
+
 	Map2FileMapping M;
 
-	if(argc == 5)
-	{
-		rangeID = atoi(argv[1]);
-		rowID = atoi(argv[2]);
-		dateID = atoi(argv[3]);
-		fieldID = atoi(argv[4]);
+	int plant_base_detect_mode = 0;
+
+	rangeID = atoi(argv[1]);
+	rowID = atoi(argv[2]);
+	dateID = atoi(argv[3]);
+	fieldID = atoi(argv[4]);
+	plant_base_detect_mode = atoi(argv[5]); 
 		//std::cout<<"range ID "<< rangeID<<std::endl;
-	}
 
 	/*double t = (double)getTickCount();
 
@@ -689,18 +716,28 @@ int main(int argc , char** argv)
 
 	StereoMatching sm;
 
-	if(fieldID == KELLY || fieldID == BURKEY) 
+	if(fieldID == A2016)
+	{
+		if(dateID == 0)
+			pt.loadAllStereoArrayParam(CANON, "CameraParam2016_1");
+		else if(dateID == 1)
+			pt.loadAllStereoArrayParam(CANON, "CameraParam2016_2");
+
+		cameraType = CANON;
+		scale_stereo = 0.2;//15;
+	}
+	else if(fieldID == KELLY || fieldID == BURKEY) 
 	{
 		pt.loadAllStereoArrayParam(CANON, "CameraParam2015");
 		cameraType = CANON;
-		scale_stereo = 0.15;
+		scale_stereo = 0.2;//15;
 	}
 	else
 	{
 		pt.loadAllStereoArrayParam(PG, "CameraParam2014");
 		cameraType= PG;
 	}
-
+	
 	// fix calibration error, shift in y direction
 	// lm, rm ok for both fields
 	if(fieldID == AH)
@@ -754,58 +791,78 @@ int main(int argc , char** argv)
 			pt.stereoArrayParamVec[9]._M2.at<double>(1, 2) += 4.;
 
 	}
+	else if(fieldID == A2016)
+	{
+		double offset;
+	
+		if(dateID == 0)
+		{
+			fs["offset_A16_0"] >> offset;
+			pt.stereoArrayParamVec[0]._M2.at<double>(1, 2) += offset;	//+ move right image up
+		}
+		else
+		{
+			fs["offset_A16_1_b"] >> offset;
+			pt.stereoArrayParamVec[0]._M2.at<double>(1, 2) += offset;	//+ move right image up
+
+			fs["offset_A16_1_m"] >> offset;
+			pt.stereoArrayParamVec[2]._M2.at<double>(1, 2) += offset;	//+ move right image up
+		}
+		
+
+	}
 
 	// load	all data folders
 	std::vector<dataFolderImgNum> AHHedgeFolderImgVec;
 	dataFolderImgNum dfin;
 
-	dfin.folderName = "AgronomyHedge07182014";
+	dfin.folderName = "AgronomyHedge07182014";	//date ID 0
 	dfin.imgNum = 2;
 	AHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "AgronomyHedge07242014";
+	dfin.folderName = "AgronomyHedge07242014";	//1
 	dfin.imgNum = 4;
 	AHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "AgronomyHedge07302014";
+	dfin.folderName = "AgronomyHedge07302014";	//2
 	dfin.imgNum = 4;
 	AHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "AgronomyHedge08132014";
+	dfin.folderName = "AgronomyHedge08132014";	//3
 	dfin.imgNum = 6;
 	AHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "AgronomyHedge08252014";
+	dfin.folderName = "AgronomyHedge08252014";	//4
 	dfin.imgNum = 6;
 	AHHedgeFolderImgVec.push_back(dfin);
 
 
 	std::vector<dataFolderImgNum> CHHedgeFolderImgVec;
-	dfin.folderName = "CurtissHedge07202014";
+	dfin.folderName = "CurtissHedge07202014";	//0
 	dfin.imgNum = 2;
 	CHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "CurtissHedge07232014";
+	dfin.folderName = "CurtissHedge07232014";	//1
 	dfin.imgNum = 2;
 	CHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "CurtissHedge07312014";
+	dfin.folderName = "CurtissHedge07312014";	//2
 	dfin.imgNum = 2;
 	CHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "CurtissHedge08042014";
+	dfin.folderName = "CurtissHedge08042014";	//3
 	dfin.imgNum = 2;
 	CHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "CurtissHedge08142014";
+	dfin.folderName = "CurtissHedge08142014";	//4
 	dfin.imgNum = 4;
 	CHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "CurtissHedge08192014";
+	dfin.folderName = "CurtissHedge08192014";	//5
 	dfin.imgNum = 6;
 	CHHedgeFolderImgVec.push_back(dfin);
 
-	dfin.folderName = "CurtissHedge09032014";
+	dfin.folderName = "CurtissHedge09032014";	//6
 	dfin.imgNum = 6;
 	CHHedgeFolderImgVec.push_back(dfin);
 
@@ -817,6 +874,16 @@ int main(int argc , char** argv)
 	dfin.folderName = "Burkey-07-31";
 	dfin.imgNum = 4;
 	BHHedgeFolderImgVec.push_back(dfin);
+
+
+	std::vector<dataFolderImgNum> A2016FolderImgVec;
+	dfin.folderName = "KneeHigh";
+	dfin.imgNum = 2;
+	A2016FolderImgVec.push_back(dfin);
+
+	dfin.folderName = "Mature";
+	dfin.imgNum = 4;
+	A2016FolderImgVec.push_back(dfin);
 
 
 	std::string dataPath;
@@ -888,7 +955,7 @@ int main(int argc , char** argv)
 
 		HedgeFolderImgVec = BHHedgeFolderImgVec;
 
-		stereoImgNum = BHHedgeFolderImgVec[dateID].imgNum;
+		stereoImgNum = A2016FolderImgVec[dateID].imgNum;
 
 		
 	}
@@ -896,17 +963,37 @@ int main(int argc , char** argv)
 	{
 
 	}
+	else if(fieldID == A2016)
+	{
+		if(dateID >= A2016FolderImgVec.size() || dateID < 0 )
+		{
+			std::cout<<"Date ID wrong"<<std::endl;
+			return 0;
+		}
 
-#if INCLUDE_PCL
-	pcl::PointCloud<pcl::PointXYZRGB>::Ptr pointcloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-	pcl::PointCloud<pcl::PointXYZRGB>::Ptr pointcloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+		pt.loadAllNameTime(A2016FolderImgVec[dateID].folderName+"/");
+
+		int nextDateID = dateID==A2016FolderImgVec.size()-1 ? dateID-1 : dateID+1;
+		pt.loadAllNextNameTime(A2016FolderImgVec[nextDateID].folderName+"/");
+		
+		pc_p_param.setParam(0, 0, 
+				   0, 0, 
+				   M_PI/2, M_PI/2,
+				   500, 500,
+				   1500, 1500,
+				   -500, -540);
+
+		HedgeFolderImgVec = A2016FolderImgVec;
+
+		stereoImgNum = A2016FolderImgVec[dateID].imgNum;
+	}
+
 
 	boost::shared_ptr<pcl::visualization::PCLVisualizer> pcViewer(new pcl::visualization::PCLVisualizer("3D Viewer"));
 	pcViewer->registerPointPickingCallback(&pp_callback);
 	pcViewer->addCoordinateSystem (400.0);
 	pcViewer->setSize(1100,700);
 
-#endif
 
 	std::vector<std::string> imgNameVec;
 
@@ -917,7 +1004,15 @@ int main(int argc , char** argv)
 
 	std::cout<<"result file open: "<<result.is_open()<<std::endl;
 
-	result << std::endl << "field(AH-0;CH1-1;CH2-2),range,row,plant height(mm),hedge width(mm),volume(m^3),VVI,leaf area(m^2),LAI,NumValidSubBox,numValidSubBox,time"<<std::endl;
+	result << std::endl << "field(AH-0;CH1-1;CH2-2),range,row,plant height(mm),hedge width(mm),volume(m^3),VVI,leaf area(m^2),LAI,Centroid2HeightRatio,projectOccupancyAlongRow,NumValidSubBox,numSubBox,time,slice volume(m^3)";
+
+	for(int i=1; i<=numSubBoxUsed; i++) result<<",sub volume " <<i<<" (m^3)";
+
+	for(int i=1; i<=numSubBoxUsed; i++) result<<",sub area " <<i<<" (m^2)";
+
+	result<<",low width(mm),middle width(mm),high width(mm)";
+
+	result << std::endl;
 
 
 	//M.getRandomImages(AH, REP_1, SHORT_PLANT, 7, plantLocationVec);
@@ -951,10 +1046,13 @@ int main(int argc , char** argv)
 				-0.0709946f, -0.0753417f, 0.994631f, 1326.08f,
 			        0.f, 0.f, 0.f, 1.f;
 	else if(cameraType == CANON)
-	preTemplateTransform << 1.f, 0.f, 0.f, -270.f,
-				0.f, 1.f, 0.f, 900.f,
-				0.f, 0.f, 1.f, 1400.0f,
-			        0.f, 0.f, 0.f, 1.f;
+	{
+
+		preTemplateTransform << 1.f, 0.f, 0.f, -270.f,
+					0.f, 1.f, 0.f, 900.f,
+					0.f, 0.f, 1.f, 1400.0f,
+					0.f, 0.f, 0.f, 1.f;
+	}
 
 	// right angle template
 	pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_baseTemplate(new pcl::PointCloud<pcl::PointXYZRGB>);
@@ -993,17 +1091,28 @@ int main(int argc , char** argv)
 		}
 	}
 
+	pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_originBaseTemplate(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+	*pc_originBaseTemplate += *pc_baseTemplate;
+
 	if(cameraType == CANON)
 	{
-		Eigen::Affine3f transform(Eigen::AngleAxisf(-M_PI/2, Eigen::Vector3f::UnitZ()));	
-		pcl::transformPointCloud(*pc_baseTemplate, *pc_baseTemplate, transform);
+		// -90 deg rotation 
+		//Eigen::Affine3f transform(Eigen::AngleAxisf(-M_PI/2, Eigen::Vector3f::UnitZ()));	
+		//pcl::transformPointCloud(*pc_baseTemplate, *pc_baseTemplate, transform);
 	}
 	
 
+	float tmp_x, tmp_y, tmp_z;
+	fs["template_A16_init_x"] >> tmp_x;
+	fs["template_A16_init_y"] >> tmp_y;	
+	fs["template_A16_init_z"] >> tmp_z;		
+
+	// translation
 	Eigen::Matrix4f baseTemplateInitTransform = Eigen::Matrix4f::Identity();
-	baseTemplateInitTransform(0,3) = cameraType==PG ? -570.f : -270.f;
-	baseTemplateInitTransform(1,3) = cameraType==PG ? 0.f : 900.f;
-	baseTemplateInitTransform(2,3) = cameraType==PG ? 1260.f : 1400.f;	
+	baseTemplateInitTransform(0,3) = cameraType==PG ? -570.f : tmp_x;//-270.f;
+	baseTemplateInitTransform(1,3) = cameraType==PG ? 0.f : tmp_y;//900.f;
+	baseTemplateInitTransform(2,3) = cameraType==PG ? 1260.f : tmp_z;//1400.f;	
 	pcl::transformPointCloud(*pc_baseTemplate, *pc_baseTemplate, baseTemplateInitTransform);
 
 	StalkDetection sd;
@@ -1015,6 +1124,8 @@ int main(int argc , char** argv)
 	int rowStart = rowID;
 	int rowEnd = M.fieldConfigVec[fieldID].rowEnd;
 	bool EXIT = false;
+
+	fs.release();
 
 	int counter = 0;
 	for (int row = rowStart; row <= rowEnd; row++)
@@ -1054,7 +1165,6 @@ int main(int argc , char** argv)
 				continue;
 			}
 			
-
 			std::vector<cv::Mat> imgVec;
 			
 			if(cameraType == PG)
@@ -1105,7 +1215,8 @@ int main(int argc , char** argv)
 
 			//double t = (double)getTickCount();
 			std::cout<<std::endl<<"Range:"<<curRange<<" Row:"<<curRow<<std::endl;			
-			stereoPairs.clear();
+
+			std::vector<cv::Mat> stereoPairs;
 	
 			for (int j = 0; j < imgVec.size()/2; j++)
 			{			
@@ -1113,7 +1224,7 @@ int main(int argc , char** argv)
 
 				// rectify image
 				std::vector<cv::Mat> RectifyStereoPairVec;
-				pt.rectifyStereoPair(PG, stereoParamIdx, imgVec[2 * j], imgVec[2 * j + 1], RectifyStereoPairVec, false, false, scale_stereo);
+				pt.rectifyStereoPair(PG, stereoParamIdx, imgVec[2 * j], imgVec[2 * j + 1], RectifyStereoPairVec, true, false, scale_stereo);
 				cvOrigionalImgVec.push_back(RectifyStereoPairVec[0]);
 
 				// prepare stereo pair, scale image and Q matrix
@@ -1129,139 +1240,196 @@ int main(int argc , char** argv)
 					cvColorImgVec.push_back(stereoPair[0]);
 				//cvColorImgVec.push_back(stereoPair[0]);
 
+
 				// next date image
-				if(cvNextDateImgVec.size() != 0 && j < HedgeFolderImgVec[nextDateID].imgNum/2) 
+				if(cvNextDateImgVec.size() != 0 && cvNextDateImgVec.size() / 2 != 0 && j < HedgeFolderImgVec[nextDateID].imgNum/2) 
 				{
 					std::vector<cv::Mat> tmpPair;
 					pt.rectifyStereoPair(PG, stereoParamIdx, cvNextDateImgVec[2 * j], cvNextDateImgVec[2 * j + 1], tmpPair, false, false, scale_stereo);
+
 					std::vector<cv::Mat> nextDateStereoPair;
 					sm.scaleStereoPairQMatrix(tmpPair, pt.stereoArrayParamVec[stereoParamIdx]._Q, scale_stereo, nextDateStereoPair, Q);
 					if(cameraType == PG)
-						cvNextDateColorImgVec.push_back(pt.equalizeIntensity(nextDateStereoPair[0]));
+						cvNextDateColorImgVec.push_back(nextDateStereoPair[0]/*pt.equalizeIntensity(nextDateStereoPair[0])*/);
 					else if(cameraType == CANON)
 						cvNextDateColorImgVec.push_back(nextDateStereoPair[0]);
 				}
+
+				std::string saved_disp_file_name = HedgeFolderImgVec[dateID].folderName+"/cloud/"
+									+ "fi_"+std::to_string(fieldID)+"_da_"+std::to_string(dateID)
+									+ "_ro_"+std::to_string(row) + "_ra_"+std::to_string(range)
+									+ "_di_"+std::to_string(j) + "_wi_" + std::to_string(stereoPair[0].cols)
+									+ "_hi_" + std::to_string(stereoPair[0].rows) + ".bin";
+
+				bool saved_disp_file_exists = false;
+
 				
 #if 1
 				// stereo matching and reproject
 				if (1)
 				{
-
-					//double t = (double)cv::getTickCount();
-					// PatchMatchStereo GPU
-					cv::Mat cvRightDisp_f;
-					// left, right, winRad, minD, maxD, iteration, scale, showDisp, left disp, right disp
-					//PatchMatchStereoHuberGPU(stereoPair[0], stereoPair[1], 5, 0, 96, 15, 3.0, true, disp, cvRightDisp_f);
-					//PatchMatchStereoGPU(stereoPair[0], stereoPair[1], 5, 0, 100, 10, 3.0, true, disp, cvRightDisp_f);
-			
-					sm.SGBMStereo(stereoPair, 7, true, disp);
-
-					//std::cout <<"stereo time:"<< ((double)cv::getTickCount() - t) / cv::getTickFrequency() << std::endl;
-
-					// remove steel bar and tire
-					if(cameraType==PG && plantSide == 0 && j == 0)
+					if(!fileExists(saved_disp_file_name))
 					{
-						// wheel big chunk
-						//disp(cv::Range(1040/2, disp.rows), cv::Range(0, 610/2)) = 0;
-						// wheel upper part
-						//disp(cv::Range(1116/2, disp.rows), cv::Range(610/2, 732/2)) = 0;
-						//disp(cv::Range((1116-20)/2,1116/2), cv::Range(610/2, 650/2)) = 0;
-						// bar
-						//disp(cv::Range(0, disp.rows), cv::Range(0, 250/2)) = 0;
+						double t = (double)cv::getTickCount();
+						// PatchMatchStereo GPU
+						cv::Mat cvRightDisp_f;
+						// left, right, winRad, minD, maxD, iteration, scale, showDisp, left disp, right disp
+						//PatchMatchStereoHuberGPU(stereoPair[0], stereoPair[1], 5, 0, 96, 15, 3.0, true, disp, cvRightDisp_f);
+						//PatchMatchStereoGPU(stereoPair[0], stereoPair[1], 5, 0, 100, 10, 3.0, true, disp, cvRightDisp_f);
 
-						//curtiss 0903
-						disp(cv::Range(500, disp.rows), cv::Range(0, 400)) = 0;
-						disp(cv::Range(470, 500), cv::Range(0, 350)) = 0;
-					}			
+
+	#if 1
+						// save stereo image pair to mccnn folder
+						std::vector<int> compression_params;
+						compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+						compression_params.push_back(9);
+						imwrite("/home/lietang/mc-cnn-master/l.png", stereoPair[0], compression_params);
+						imwrite("/home/lietang/mc-cnn-master/r.png", stereoPair[1], compression_params);
+
+						std::string data_cost = "MCCNN_acrt"; 
+						std::string smoothness_prior = "NL2TGV";
+						std::string left_name = "";
+						std::string right_name = "";
+						PatchMatchStereoNL2TGV(stereoPair[0], stereoPair[1], 50, 0, 120, 80, 1.0, false, disp, cvRightDisp_f, 
+								       data_cost, smoothness_prior, left_name, right_name);
+				
+						// change back to project working directory
+						int status = chdir("/media/lietang/SSD/PhenotypingDataProcessing");
+
+	#else
+						// 2nd argument is the number of dispairy, will be x16
+						sm.SGBMStereo(stereoPair, 7, true, disp);
+	#endif
+
+						std::cout <<"stereo time:"<< ((double)cv::getTickCount() - t) / cv::getTickFrequency() << std::endl;
+
+						// remove steel bar and tire
+						if(cameraType==PG && plantSide == 0 && j == 0)
+						{
+							// wheel big chunk
+							//disp(cv::Range(1040/2, disp.rows), cv::Range(0, 610/2)) = 0;
+							// wheel upper part
+							//disp(cv::Range(1116/2, disp.rows), cv::Range(610/2, 732/2)) = 0;
+							//disp(cv::Range((1116-20)/2,1116/2), cv::Range(610/2, 650/2)) = 0;
+							// bar
+							//disp(cv::Range(0, disp.rows), cv::Range(0, 250/2)) = 0;
+
+							//curtiss 0903
+							disp(cv::Range(500, disp.rows), cv::Range(0, 400)) = 0;
+							disp(cv::Range(470, 500), cv::Range(0, 350)) = 0;
+						}			
 					
-					// remove border
-					int borderWidth = 50;
-					disp(cv::Range(0, borderWidth), cv::Range(0, disp.cols)) = 0.f;
-					disp(cv::Range(disp.rows-borderWidth, disp.rows), cv::Range(0, disp.cols)) = 0.f; 					
+						// remove border
+						int borderWidth = 50;
+						disp(cv::Range(0, borderWidth), cv::Range(0, disp.cols)) = 0.f;
+						disp(cv::Range(disp.rows-borderWidth, disp.rows), cv::Range(0, disp.cols)) = 0.f; 					
 					
-					if (cameraType==PG && j==0)
-					{
-						if (plantSide == 0)
-							disp(cv::Range(0, disp.rows), cv::Range(0, 170)) = 0;
-						else if (plantSide == 1)
-							disp(cv::Range(0, disp.rows), cv::Range(0, 120)) = 0;
+						if (cameraType==PG && j==0)
+						{
+							if (plantSide == 0)
+								disp(cv::Range(0, disp.rows), cv::Range(0, 170)) = 0;
+							else if (plantSide == 1)
+								disp(cv::Range(0, disp.rows), cv::Range(0, 120)) = 0;
+						}
+
+
+	#if 1
+				
+						// remove sky
+						if(cameraType == PG)
+						{
+							//make a mask of blue sky, convert rgb to lab
+							cv::Mat hsv; 				
+							cv::cvtColor(stereoPair[0], hsv, CV_BGR2HSV);
+							std::vector<cv::Mat> channels;
+							cv::split(hsv, channels);
+							//cv::imshow("HSV", channels[0]);
+							//cv::waitKey(0);
+				
+							for(int y=0; y<stereoPair[0].rows; y++)
+							{
+								for(int x=0; x<stereoPair[0].cols; x++)
+								{
+									uchar hue = channels[0].at<uchar>(y,x);
+									if(hue > 85 && hue < 105)
+									{
+										//(cvColorImgVec[j].at<Vec3b>(y,x)).val[0] = 255;
+										//(cvColorImgVec[j].at<Vec3b>(y,x)).val[1] = 255;
+										//(cvColorImgVec[j].at<Vec3b>(y,x)).val[2] = 255;
+										disp.at<float>(y, x) = 0.f;
+									}
+								}
+							}
+
+							// remove disparity of saturated pixel
+							for(int y=0; y<stereoPair[0].rows; y++)
+							{
+								for(int x=0; x<stereoPair[0].cols; x++)
+								{
+									cv::Vec3b rgb = stereoPair[0].at<Vec3b>(y,x);
+									if(rgb[0]==255 && rgb[1]==255 && rgb[2]==255)
+									{
+										disp.at<float>(y, x) = 0.f;
+									}
+								}
+							}
+						}
+						else if(cameraType == CANON)
+						{
+							for(int y=0; y<stereoPair[0].rows; y++)
+							{
+								for(int x=0; x<stereoPair[0].cols; x++)
+								{
+								
+									int b = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[0]);
+									int g = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[1]);
+									int r = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[2]);
+
+									if(abs(g-b) > 50 || b == 255)
+									{
+										(cvColorImgVec[j].at<Vec3b>(y,x)).val[0] = 255;
+										(cvColorImgVec[j].at<Vec3b>(y,x)).val[1] = 0;
+										(cvColorImgVec[j].at<Vec3b>(y,x)).val[2] = 0;
+										disp.at<float>(y, x) = 0.f;
+									}
+								}
+							}
+						}
+					
+	#endif
+						saved_disp_file_exists = false;
 					}
+					else
+					{
+						saved_disp_file_exists = true;
 
+						const int rows = stereoPair[0].rows;
+						const int cols = stereoPair[0].cols;
+						disp.create(rows, cols, CV_32F);
+						std::ifstream infile(saved_disp_file_name, std::ifstream::binary);
+						infile.read((char*)disp.ptr<float>(0), sizeof(float)*rows*cols);
+					}
 
 #if 1
-				
-					// remove sky
-					if(cameraType == PG)
+					if(!saved_disp_file_exists)
 					{
-						//make a mask of blue sky, convert rgb to lab
-						cv::Mat hsv; 				
-						cv::cvtColor(stereoPair[0], hsv, CV_BGR2HSV);
-						std::vector<cv::Mat> channels;
-						cv::split(hsv, channels);
-						//cv::imshow("HSV", channels[0]);
-						//cv::waitKey(0);
-				
-						for(int y=0; y<stereoPair[0].rows; y++)
-						{
-							for(int x=0; x<stereoPair[0].cols; x++)
-							{
-								uchar hue = channels[0].at<uchar>(y,x);
-								if(hue > 85 && hue < 105)
-								{
-									//(cvColorImgVec[j].at<Vec3b>(y,x)).val[0] = 255;
-									//(cvColorImgVec[j].at<Vec3b>(y,x)).val[1] = 255;
-									//(cvColorImgVec[j].at<Vec3b>(y,x)).val[2] = 255;
-									disp.at<float>(y, x) = 0.f;
-								}
-							}
-						}
-
-						// remove disparity of saturated pixel
-						for(int y=0; y<stereoPair[0].rows; y++)
-						{
-							for(int x=0; x<stereoPair[0].cols; x++)
-							{
-								cv::Vec3b rgb = stereoPair[0].at<Vec3b>(y,x);
-								if(rgb[0]==255 && rgb[1]==255 && rgb[2]==255)
-								{
-									disp.at<float>(y, x) = 0.f;
-								}
-							}
-						}
+						ofstream my_file(saved_disp_file_name, std::ofstream::binary);
+						my_file.write((char*)disp.ptr<float>(0), sizeof(float)*disp.cols*disp.rows);
+						my_file.close();
 					}
-					else if(cameraType == CANON)
-					{
-						for(int y=0; y<stereoPair[0].rows; y++)
-						{
-							for(int x=0; x<stereoPair[0].cols; x++)
-							{
-								
-								int b = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[0]);
-								int g = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[1]);
-								int r = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[2]);
-
-								if(abs(g-b) > 50)
-								{
-									(cvColorImgVec[j].at<Vec3b>(y,x)).val[0] = 255;
-									(cvColorImgVec[j].at<Vec3b>(y,x)).val[1] = 0;
-									(cvColorImgVec[j].at<Vec3b>(y,x)).val[2] = 0;
-									disp.at<float>(y, x) = 0.f;
-								}
-							}
-						}
-					}
-					
 #endif
 
 
 // display disparity map
-#if 0
+#if 1
 					cv::Mat disp8;
 					disp.convertTo(disp8, CV_8U);
 					imshow("disp"+std::to_string(j), disp8*3);
-					imshow("left img", stereoPair[0]);
-					imshow("right img", stereoPair[1]);
-					cv::waitKey(0);
+					//imshow("left img", stereoPair[0]);
+					//imshow("right img", stereoPair[1]);
+					cv::waitKey(wait_key_time);
+					//cv:destroyWindow("left img");
+					//cv:destroyWindow("right img");
 #endif
 					dispVec.push_back(disp);
 					cv::Mat cvPointCloud;
@@ -1272,11 +1440,14 @@ int main(int argc , char** argv)
 				}
 #endif
 			}
+	
+
+			//continue;
 			
 			//std::cout <<"stereo time:"<< ((double)getTickCount() - t) / getTickFrequency() << std::endl;
 
 			// root line points
-			pcl::PointCloud<pcl::PointXYZ>::Ptr pc_rootLinePoints(new pcl::PointCloud<pcl::PointXYZ>);;
+			pcl::PointCloud<pcl::PointXYZ>::Ptr pc_rootLinePoints(new pcl::PointCloud<pcl::PointXYZ>);
 
 			// show rgb image
 			if (cvColorImgVec.size() != 0)
@@ -1332,114 +1503,164 @@ int main(int argc , char** argv)
 				}
 
 
-//user pick root line
-#if 0
-				cv::line(canvas, preRootLinePoints[0], preRootLinePoints[1], cv::Scalar(0, 255, 255), 1);
-
-				cv::imshow("RGB Image", canvas);
-				cv::moveWindow("RGB Image", 100, 100);
-
-				RGBImagePackage imgPkg;
-				imgPkg.img = canvas;
-				cv::setMouseCallback("RGB Image", pickRootLineCallBack, (void*)&imgPkg);
-				rootLinePoints.clear();	
-
-				bool NEW_ROOT_LINE = false;
-
-				while(true)
+//user pick root line (this only works for pointgrey data now)
+#if 1	
+				if(plant_base_detect_mode == 0)
 				{
-					int key = cv::waitKey(0);
+					cv::line(canvas, preRootLinePoints[0], preRootLinePoints[1], cv::Scalar(0, 255, 255), 1);
 
-					//std::cout<<key<<std::endl;
+					cv::imshow("RGB Image", canvas);
+					cv::moveWindow("RGB Image", 100, 100);
 
-					// key = q
-					if(key == 1048689)
-						break;
+					RGBImagePackage imgPkg;
+					imgPkg.img = canvas;
+					cv::setMouseCallback("RGB Image", pickRootLineCallBack, (void*)&imgPkg);
+					rootLinePoints.clear();	
 
-					// key = o, overwrite root line end points
-					if(key == 1048687)
+					bool NEW_ROOT_LINE = false;
+
+					while(true)
 					{
-						if(rootLinePoints.size() == 2)
+						int key = cv::waitKey(0);
+
+						//std::cout<<key<<std::endl;
+
+						// key = q
+						if(key == 1048689)
+							break;
+
+						// key = o, overwrite root line end points
+						if(key == 1048687)
 						{
-							NEW_ROOT_LINE = true;				
+							if(rootLinePoints.size() == 2)
+							{
+								NEW_ROOT_LINE = true;				
+								break;
+							}
+							else
+								std::cout<<"overwrite root line fail-"<<rootLinePoints.size()<<std::endl;
+						}
+
+						// key = e, exit
+						if(key == 1048677)
+						{
+							std::cout<<"EXIT..."<<std::endl;
+							EXIT = true;
 							break;
 						}
+					}
+
+					if(EXIT) break;
+
+					// transform points back to origional image coordinate
+					cv::Point tmpRootLinePoints[2];
+					if(cameraType == PG)
+					{
+						if(NEW_ROOT_LINE)
+						{
+							for(int i=0; i<2; i++)
+							{
+								int tmp = rootLinePoints[i].y;
+								tmpRootLinePoints[i].y = rootLinePoints[i].x;
+								tmpRootLinePoints[i].x = canvas.rows-1-tmp;
+							}
+						}
 						else
-							std::cout<<"overwrite root line fail-"<<rootLinePoints.size()<<std::endl;
+						{ 			
+							for(int i=0; i<2; i++)
+							{
+								int tmp = preRootLinePoints[i].y;
+								tmpRootLinePoints[i].y = preRootLinePoints[i].x;
+								tmpRootLinePoints[i].x = canvas.rows-1-tmp;
+							}
+						}
 					}
-
-					// key = e, exit
-					if(key == 1048677)
+					else if(cameraType == CANON) 							
 					{
-						std::cout<<"EXIT..."<<std::endl;
-						EXIT = true;
-						break;
+						if(NEW_ROOT_LINE)
+						{
+							for(int i=0; i<2; i++)
+							{
+								tmpRootLinePoints[i].y = rootLinePoints[i].y;
+								tmpRootLinePoints[i].x = rootLinePoints[i].x;
+							}
+						}
+						else
+						{ 			
+							for(int i=0; i<2; i++)
+							{
+								tmpRootLinePoints[i].y = preRootLinePoints[i].y;
+								tmpRootLinePoints[i].x = preRootLinePoints[i].x;
+							}
+						}
 					}
-				}
 
-				if(EXIT) break;
 
-				// transform points back to origional image coordinate
-				cv::Point tmpRootLinePoints[2];
-				if(NEW_ROOT_LINE)
-				{
-					for(int i=0; i<2; i++)
+					// compute 2D line equation
+					cv::Point2f p0(tmpRootLinePoints[0].x/scale_display, tmpRootLinePoints[0].y/scale_display);
+					cv::Point2f p1(tmpRootLinePoints[1].x/scale_display, tmpRootLinePoints[1].y/scale_display);
+					cv::Point2f pt = p0-p1;		
+
+					std::cout<<p0<<"\n"<<p1<<"\n";
+
+					if(cameraType == PG)
 					{
-						int tmp = rootLinePoints[i].y;
-						tmpRootLinePoints[i].y = rootLinePoints[i].x;
-						tmpRootLinePoints[i].x = canvas.rows-1-tmp;
+						if( pt.y != 0.f )
+						{										
+							// sample root line points and remove points below root line
+							for(int y=0; y<cvPointCloudVec[0].rows; y++)
+							{
+								// given y, compute x on the line
+								int x = (int)((y-p0.y)/pt.y*pt.x + p0.x);
+								pcl::PointXYZ point;
+								point.x = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[0];
+								point.y = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[1];
+								point.z = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[2];
+								pc_rootLinePoints->push_back(point);
+								dispVec[0](cv::Rect(0, y, x, 1)) = 0;
+								cvPointCloudVec[0](cv::Rect(0, y, x, 1)) = 0;
+							}				
+						}
+						else	// slope 90 deg
+						{
+							// given y, compute x on the line
+							int x = (int)(p0.x);
+
+							for(int y=0; y<cvPointCloudVec[0].rows; y++)
+							{			
+								pcl::PointXYZ point;
+								point.x = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[0];
+								point.y = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[1];
+								point.z = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[2];
+								pc_rootLinePoints->push_back(point);							
+							}
+
+							dispVec[0](cv::Rect(0, 0, x, dispVec[0].rows)) = 0;
+							cvPointCloudVec[0](cv::Rect(0, 0, x, cvPointCloudVec[0].rows)) = 0;
+						}
 					}
-				}
-				else
-				{ 			
-					for(int i=0; i<2; i++)
+					else if(cameraType == CANON)
 					{
-						int tmp = preRootLinePoints[i].y;
-						tmpRootLinePoints[i].y = preRootLinePoints[i].x;
-						tmpRootLinePoints[i].x = canvas.rows-1-tmp;
-					}
-				} 							
+						// sample root line points and remove points below root line
+						for(int x=0; x<cvPointCloudVec[0].cols; x++)
+						{
+							// given x, compute y on the line
+							int y = (int)((x-p0.x)/pt.x*pt.y + p0.y);
+							pcl::PointXYZ point;
+							point.x = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[0];
+							point.y = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[1];
+							point.z = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[2];
+							pc_rootLinePoints->push_back(point);
+							dispVec[0](cv::Rect(x, y, 1, dispVec[0].rows-y)) = 0;
+							cvPointCloudVec[0](cv::Rect(x, y, 1, dispVec[0].rows-y)) = 0;	
+						}
 
-
-				// compute 2D line equation
-				cv::Point2f p0(tmpRootLinePoints[0].x/scale_display, tmpRootLinePoints[0].y/scale_display);
-				cv::Point2f p1(tmpRootLinePoints[1].x/scale_display, tmpRootLinePoints[1].y/scale_display);
-				cv::Point2f pt = p0-p1;							
-
-				if( pt.y != 0.f )
-				{										
-					// sample root line points and remove points below root line
-					for(int y=0; y<cvPointCloudVec[0].rows; y++)
-					{
-						// given y, compute x on the line
-						int x = (int)((y-p0.y)/pt.y*pt.x + p0.x);
-						pcl::PointXYZ point;
-						point.x = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[0];
-						point.y = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[1];
-						point.z = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[2];
-						pc_rootLinePoints->push_back(point);
-						dispVec[0](cv::Rect(0, y, x, 1)) = 0;
-						cvPointCloudVec[0](cv::Rect(0, y, x, 1)) = 0;
-					}				
-				}
-				else	// slope 90 deg
-				{
-					// given y, compute x on the line
-					int x = (int)(p0.x);
-
-					for(int y=0; y<cvPointCloudVec[0].rows; y++)
-					{			
-						pcl::PointXYZ point;
-						point.x = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[0];
-						point.y = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[1];
-						point.z = cvPointCloudVec[0].at<cv::Vec3f>(y, x).val[2];
-						pc_rootLinePoints->push_back(point);							
 					}
 
-					dispVec[0](cv::Rect(0, 0, x, dispVec[0].rows)) = 0;
-					cvPointCloudVec[0](cv::Rect(0, 0, x, cvPointCloudVec[0].rows)) = 0;
+
+
+					cv::destroyWindow("RGB Image");
 				}
-				cv::destroyWindow("RGB Image");
 #endif
 
 				if(!nextDateCanvas.empty())
@@ -1448,8 +1669,7 @@ int main(int argc , char** argv)
 				cv::imshow("RGB Images", canvas);
 				cv::moveWindow("RGB Images", 100,100);
 				
-				cv::waitKey(0);
-
+				cv::waitKey(wait_key_time);
 
 				//continue;
 
@@ -1459,11 +1679,16 @@ int main(int argc , char** argv)
 				dispVec[0].convertTo(disp8, CV_8U);	
 
 				cv::Mat disp8_;
-				cv::transpose(disp8, disp8_);
-				cv::flip(disp8_, disp8_, 0);		
+				if(cameraType == PG)
+				{
+					cv::transpose(disp8, disp8_);
+					cv::flip(disp8_, disp8_, 0);		
+				}
+				else 
+					disp8_ = disp8;
 
 				imshow("disp", disp8_);
-				cv::waitKey(100);
+				cv::waitKey(0);
 #endif
 
 				/*if (task == DIAMETER)
@@ -1561,7 +1786,8 @@ int main(int argc , char** argv)
 
 			double t1 = (double)getTickCount();
 
-			pcl_pcVec.clear();
+
+			std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> pcl_pcVec;
 			
 			// move point cloud from opencv to pcl format + prefilter by depth
 			for (int j = 0; j < cvPointCloudVec.size(); j++)
@@ -1594,7 +1820,6 @@ int main(int argc , char** argv)
 							p.g = j*125;
 							p.r = 255;
 
-							pointcloud->push_back(p);
 							tmp_pc->push_back(p);											
 						}		
 					}
@@ -1602,8 +1827,18 @@ int main(int argc , char** argv)
 				
 				pcl_pcVec.push_back(tmp_pc);
 			}
-			
+
 			//std::cout << "copy to pcl:" << ((double)getTickCount() - t1) / getTickFrequency() << std::endl;
+
+#if 0
+			for(int i=0; i<pcl_pcVec.size(); i++) 
+			{
+				pcViewer->addPointCloud(pcl_pcVec[i], "pc"+std::to_string(i), 0);
+				pcViewer->spin();
+				pcViewer->removeAllPointClouds(0);
+			}
+#endif
+
 		
 
 			// outlier removal
@@ -1672,7 +1907,9 @@ int main(int argc , char** argv)
 				Eigen::Matrix4f inverse = transform.inverse();
 				pcl_pcVec[i]->clear();
 				pcl::transformPointCloud(*pc_plant, *pcl_pcVec[i], inverse);		
-				//std::cout<<"cloud size "<<i<<":"<<pcl_pcVec[i]->points.size()<<std::endl;
+				std::cout<<"cloud size "<<i<<":"<<pcl_pcVec[i]->points.size()<<std::endl;
+
+				
 				
 				// not enough points, remove it			
 				if(pcl_pcVec[i]->points.size()<4000)
@@ -1718,7 +1955,7 @@ int main(int argc , char** argv)
 					pass.filter(*tmpOutliers);
 					*pc_plantOutliers += *tmpOutliers;
 
-					/*if(i==0)
+					if(pc_rootLinePoints->size()!=0 && i==0)
 					{
 						// transform root line points
 						pcl::PassThrough<pcl::PointXYZ> pass_;
@@ -1731,8 +1968,8 @@ int main(int argc , char** argv)
 						pass_.setInputCloud(tmp_);
 						pass_.filter(*pc_rootLinePoints);
 						//std::cout<<"root line point size:"<<pc_rootLinePoints->points.size()<<std::endl;
-					}*/		
-				}					
+					}		
+				}
 			}
 
 			
@@ -1783,251 +2020,284 @@ int main(int argc , char** argv)
 			// SOIL REMOVAL
 			// base line variables
 			pcl::PointXYZ rootPoint1, rootPoint2, rootPoint0, rootLineDir;
-			bool FOUND_NEW_LINE = false;
-#if 0
-			// RANSAC fit root line from line by user
-			if( pc_rootLinePoints->points.size() > 20)
-			{
-				pcl::ModelCoefficients::Ptr coefficients_root(new pcl::ModelCoefficients);
-				pcl::PointIndices::Ptr inliers_root(new pcl::PointIndices);
-				pcl::SACSegmentation<pcl::PointXYZ> seg_root;
-				seg_root.setOptimizeCoefficients(true);
-				seg_root.setModelType(pcl::SACMODEL_LINE);
-				seg_root.setMethodType(pcl::SAC_LMEDS);
-				seg_root.setDistanceThreshold(30);
-				seg_root.setAxis(Eigen::Vector3f::UnitY());
-				seg_root.setEpsAngle(0);
-				seg_root.setInputCloud(pc_rootLinePoints);
-				seg_root.segment(*inliers_root, *coefficients_root);
-				//std::cout<<"root line point:"<<coefficients_root->values[0]<<" "<<coefficients_root->values[1]<<" "<<coefficients_root->values[2]<<" dir:"
-					//<<coefficients_root->values[3]<<" "<<coefficients_root->values[4]<<" "<<coefficients_root->values[5]<<std::endl;
-
-				rootPoint0.x = coefficients_root->values[0];
-				rootPoint0.y = coefficients_root->values[1];
-				rootPoint0.z = coefficients_root->values[2];
-				rootLineDir.x = coefficients_root->values[3];
-				rootLineDir.y = coefficients_root->values[4];
-				rootLineDir.z = coefficients_root->values[5];
-
-				// check if newly computed root line is accurate
-				float line2lineDistance = fabs(rootPoint0.x-preRootPoint.x);
-				
-				if( line2lineDistance < 200 && fabs(rootLineDir.y) > 0.99f)	// if the distance is ok, update 
-				{
-					std::cout<<"use New line!"<<std::endl;
-					preRootPoint.x = rootPoint0.x;
-					preRootPoint.y = rootPoint0.y;
-					preRootPoint.z = rootPoint0.z;
-					preRootLineDir.x = rootLineDir.x;
-					preRootLineDir.y = rootLineDir.y;
-					preRootLineDir.z = rootLineDir.z;
-				
-					if(rootLinePoints.size()==2)
-					{
-						preRootLinePoints[0] = rootLinePoints[0];
-						preRootLinePoints[1] = rootLinePoints[1];	
-					}
-					FOUND_NEW_LINE = true;
-				}	
-			}
-
-			if(!FOUND_NEW_LINE)	// if distance is too large, use previous
-			{
-				std::cout<<"use PREVIOUS baseline!"<<std::endl;
-				rootPoint0.x = preRootPoint.x;
-				rootPoint0.y = preRootPoint.y;
-				rootPoint0.z = preRootPoint.z;
-				rootLineDir.x = preRootLineDir.x;
-				rootLineDir.y = preRootLineDir.y;
-				rootLineDir.z = preRootLineDir.z;		
-			}	
-
-			pcViewer->addPointCloud(pc_rootLinePoints, "root line points", 0);
-#endif	
-
-			// find baseline by using ICP template matching
-			Eigen::Vector4f btmCentroid;
-			if(cameraType == CANON)
-				pcl::compute3DCentroid(*pcl_pcVec[0], btmCentroid);
-			//std::cout<<"soil centroid:"<<soilCentroid<<std::endl;
-
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_tmp(new pcl::PointCloud<pcl::PointXYZRGB>);
-			pcl::PassThrough<pcl::PointXYZRGB> pass;
-			
-			pass.setInputCloud(pcl_pcVec[0]);
+			bool FOUND_NEW_LINE = false;
 
-			if(cameraType == PG)			
+#if 1
+			if(plant_base_detect_mode == 0)
 			{
-				pass.setFilterFieldName("x");
-				pass.setFilterLimits(-3000., -180.);
-			}
-			else if(cameraType == CANON)
-			{
-				pass.setFilterFieldName("y");
-				pass.setFilterLimits(btmCentroid(1), 3000.);
-			}
-			
-			
-			pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_btmPart(new pcl::PointCloud<pcl::PointXYZRGB>);
-			pass.setFilterLimitsNegative(false);
-			pc_tmp->clear();
-			pass.filter(*pc_tmp);
-			pass.setFilterFieldName("z");
-			if(cameraType == PG)
-				pass.setFilterLimits(1000., 1500.);
-			else if(cameraType == CANON)
-				pass.setFilterLimits(800., 1800.);
-
-			pass.setInputCloud(pc_tmp);
-			pass.filter(*pc_btmPart);
-			for(int i=0; i<pc_btmPart->points.size(); i++)
-			{
-				pc_btmPart->points[i].b = 255;
-			}
-
-			Eigen::Matrix4f baseTemplateTransform;
-			pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_transformedTemplate(new pcl::PointCloud<pcl::PointXYZRGB>);
-			std::cout<<"btm size:"<<pc_btmPart->points.size()<<std::endl;
-			if(pc_btmPart->points.size() > 1000)
-			{
-				pcl::IterativeClosestPoint<pcl::PointXYZRGB, pcl::PointXYZRGB> icp;
-				icp.setInputSource(pc_baseTemplate);
-				icp.setInputTarget(pc_btmPart);
-				// Set the max correspondence distance to 40cm (e.g., correspondences with higher distances will be ignored)
-				icp.setMaxCorrespondenceDistance (400.f);
-				// Set the maximum number of iterations (criterion 1)
-				icp.setMaximumIterations (50);
-				// Set the transformation epsilon (criterion 2)
-				//icp.setTransformationEpsilon (1e-8);
-				// Set the euclidean distance difference epsilon (criterion 3)
-				//icp.setEuclideanFitnessEpsilon (1000);
-				
-				icp.align(*pc_transformedTemplate);
-				baseTemplateTransform = icp.getFinalTransformation()*baseTemplateInitTransform;
-				std::cout<< baseTemplateTransform<<std::endl;
-
-				const float xDifferenceThresh = cameraType == PG ? 150.f : 300.f;
-				const float zDifferenceThresh = cameraType == PG ? 150.f : 300.f;
-				const float xAlignThresh = cameraType == PG ? 0.98f : 0.9f;
-				const float zAlignThresh = cameraType == PG ? 0.98f : 0.9f;
-
-				//check if transformation valid, if not use previous
-				if(cameraType == PG)
+				// RANSAC fit root line from line by user
+				if( pc_rootLinePoints->points.size() > 20)
 				{
-					if(   baseTemplateTransform(1,1) < 0.99f 	//Not align well with y axis
-					   || fabs(baseTemplateTransform(0,3)-preTemplateTransform(0,3)) > xDifferenceThresh	// x translation too large 
-					   || fabs(baseTemplateTransform(2,3)-preTemplateTransform(2,3)) > zDifferenceThresh	// z translation too large
-					   || baseTemplateTransform(0,0) < xAlignThresh 	//Not align well with x axis
-					   || baseTemplateTransform(2,2) < zAlignThresh 	//Not align well with z axis
-					  )
+					pcl::ModelCoefficients::Ptr coefficients_root(new pcl::ModelCoefficients);
+					pcl::PointIndices::Ptr inliers_root(new pcl::PointIndices);
+					pcl::SACSegmentation<pcl::PointXYZ> seg_root;
+					seg_root.setOptimizeCoefficients(true);
+					seg_root.setModelType(pcl::SACMODEL_LINE);
+					seg_root.setMethodType(pcl::SAC_LMEDS);
+					seg_root.setDistanceThreshold(30);
+					seg_root.setAxis(Eigen::Vector3f::UnitY());
+					seg_root.setEpsAngle(0);
+					seg_root.setInputCloud(pc_rootLinePoints);
+					seg_root.segment(*inliers_root, *coefficients_root);
+					std::cout<<"root line point:"<<coefficients_root->values[0]<<" "<<coefficients_root->values[1]<<" "<<coefficients_root->values[2]<<" dir:"
+						<<coefficients_root->values[3]<<" "<<coefficients_root->values[4]<<" "<<coefficients_root->values[5]<<std::endl;
+
+					rootPoint0.x = coefficients_root->values[0];
+					rootPoint0.y = coefficients_root->values[1];
+					rootPoint0.z = coefficients_root->values[2];
+					rootLineDir.x = coefficients_root->values[3];
+					rootLineDir.y = coefficients_root->values[4];
+					rootLineDir.z = coefficients_root->values[5];
+
+					// check if newly computed root line is accurate
+					float line2lineDistance = fabs(rootPoint0.x-preRootPoint.x);
+				
+					//if( line2lineDistance < 200 && fabs(rootLineDir.y) > 0.99f)	// if the distance is ok, update 
 					{
-						baseTemplateTransform = preTemplateTransform;
-						pc_transformedTemplate->clear();
-						pcl::transformPointCloud(*pc_baseTemplate, *pc_transformedTemplate, baseTemplateTransform*baseTemplateInitTransform.inverse());
-						std::cout<<"Use PREVIOUS baseline"<<std::endl;
-					}
-					else
-					{
-						preTemplateTransform = baseTemplateTransform;
-						std::cout<<"Use NEW baseline"<<std::endl;
-					}
+						std::cout<<"use New line!"<<std::endl;
+						preRootPoint.x = rootPoint0.x;
+						preRootPoint.y = rootPoint0.y;
+						preRootPoint.z = rootPoint0.z;
+						preRootLineDir.x = rootLineDir.x;
+						preRootLineDir.y = rootLineDir.y;
+						preRootLineDir.z = rootLineDir.z;
+				
+						if(rootLinePoints.size()==2)
+						{
+							preRootLinePoints[0] = rootLinePoints[0];
+							preRootLinePoints[1] = rootLinePoints[1];	
+						}
+						FOUND_NEW_LINE = true;
+					}	
+				}
+
+				if(!FOUND_NEW_LINE)	// if distance is too large, use previous
+				{
+					std::cout<<"use PREVIOUS baseline!"<<std::endl;
+					rootPoint0.x = preRootPoint.x;
+					rootPoint0.y = preRootPoint.y;
+					rootPoint0.z = preRootPoint.z;
+					rootLineDir.x = preRootLineDir.x;
+					rootLineDir.y = preRootLineDir.y;
+					rootLineDir.z = preRootLineDir.z;		
+				}	
+			
+				//pcViewer->addPointCloud(pc_rootLinePoints, "root line points", 0);
+			}
+#endif	
+			else if(plant_base_detect_mode == 1)
+			{
+			// find baseline by using ICP template matching
+#if 1
+				Eigen::Vector4f btmCentroid;
+				if(cameraType == CANON)
+					pcl::compute3DCentroid(*pcl_pcVec[0], btmCentroid);
+				//std::cout<<"btm pc centroid:"<<btmCentroid<<std::endl;
+
+				pcl::PassThrough<pcl::PointXYZRGB> pass;
+			
+				pass.setInputCloud(pcl_pcVec[0]);
+
+				if(cameraType == PG)			
+				{
+					pass.setFilterFieldName("x");
+					pass.setFilterLimits(-3000., -180.);
 				}
 				else if(cameraType == CANON)
 				{
-					if(   baseTemplateTransform(0,0) < 0.99f 	//Not align well with x axis
-					   || fabs(baseTemplateTransform(1,3)-preTemplateTransform(1,3)) > xDifferenceThresh	// y translation too large 
-					   || fabs(baseTemplateTransform(2,3)-preTemplateTransform(2,3)) > zDifferenceThresh	// z translation too large
-					   || baseTemplateTransform(1,1) < xAlignThresh 	//Not align well with y axis
-					   || baseTemplateTransform(2,2) < zAlignThresh 	//Not align well with z axis
-					  )
+					//pass.setFilterFieldName("y");
+					//pass.setFilterLimits(btmCentroid(1), 3000.);
+				
+					pass.setFilterFieldName("x");
+					pass.setFilterLimits(-3000., btmCentroid(0)+100);
+				}
+
+				pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_btmPart(new pcl::PointCloud<pcl::PointXYZRGB>);
+				pass.setFilterLimitsNegative(false);
+				pc_tmp->clear();
+				pass.filter(*pc_tmp);
+
+				pass.setFilterFieldName("z");
+				if(cameraType == PG)
+					pass.setFilterLimits(1000., 1500.);
+				else if(cameraType == CANON)
+					pass.setFilterLimits(800., 1800.);
+
+				pass.setInputCloud(pc_tmp);
+				pass.filter(*pc_btmPart);
+				for(int i=0; i<pc_btmPart->points.size(); i++)
+				{
+					pc_btmPart->points[i].b = 255;
+				}
+
+				Eigen::Matrix4f baseTemplateTransform;
+				pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_transformedTemplate(new pcl::PointCloud<pcl::PointXYZRGB>);
+				std::cout<<"btm size:"<<pc_btmPart->points.size()<<std::endl;
+				if(pc_btmPart->points.size() > 1000)
+				{
+					pcl::IterativeClosestPoint<pcl::PointXYZRGB, pcl::PointXYZRGB> icp;
+					icp.setInputSource(pc_baseTemplate);
+					icp.setInputTarget(pc_btmPart);
+					// Set the max correspondence distance to 40cm (e.g., correspondences with higher distances will be ignored)
+					icp.setMaxCorrespondenceDistance (400.f);
+					// Set the maximum number of iterations (criterion 1)
+					icp.setMaximumIterations (50);
+					// Set the transformation epsilon (criterion 2)
+					//icp.setTransformationEpsilon (1e-8);
+					// Set the euclidean distance difference epsilon (criterion 3)
+					//icp.setEuclideanFitnessEpsilon (1000);
+				
+					icp.align(*pc_transformedTemplate);
+					baseTemplateTransform = icp.getFinalTransformation()*baseTemplateInitTransform;
+					std::cout<< baseTemplateTransform<<std::endl;
+
+					pcViewer->addPointCloud(pc_baseTemplate, "init template", 0);
+
+					pcViewer->addPointCloud(pc_btmPart, "btmPart", 0);
+					pcViewer->spinOnce(pcl_view_time);
+					pcViewer->addPointCloud(pc_transformedTemplate, "template", 0);
+					pcViewer->spinOnce(pcl_view_time);
+					pcViewer->removePointCloud("init template", 0);
+					pcViewer->removePointCloud("btmPart", 0);
+					pcViewer->removePointCloud("template", 0);
+
+					const float xDifferenceThresh = cameraType == PG ? 150.f : 300.f;
+					const float zDifferenceThresh = cameraType == PG ? 150.f : 300.f;
+					const float xAlignThresh = cameraType == PG ? 0.98f : 0.9f;
+					const float zAlignThresh = cameraType == PG ? 0.98f : 0.9f;
+
+					//check if transformation valid, if not use previous
+					if(cameraType == PG)
 					{
-						baseTemplateTransform = preTemplateTransform;
-						pc_transformedTemplate->clear();
-						pcl::transformPointCloud(*pc_baseTemplate, *pc_transformedTemplate, baseTemplateTransform*baseTemplateInitTransform.inverse());
-						std::cout<<"Use PREVIOUS baseline"<<std::endl;
+						if(   baseTemplateTransform(1,1) < 0.99f 	//Not align well with y axis
+						   || fabs(baseTemplateTransform(0,3)-preTemplateTransform(0,3)) > xDifferenceThresh	// x translation too large 
+						   || fabs(baseTemplateTransform(2,3)-preTemplateTransform(2,3)) > zDifferenceThresh	// z translation too large
+						   || baseTemplateTransform(0,0) < xAlignThresh 	//Not align well with x axis
+						   || baseTemplateTransform(2,2) < zAlignThresh 	//Not align well with z axis
+						  )
+						{
+							baseTemplateTransform = preTemplateTransform;
+							pc_transformedTemplate->clear();
+							pcl::transformPointCloud(*pc_baseTemplate, *pc_transformedTemplate, baseTemplateTransform*baseTemplateInitTransform.inverse());
+							std::cout<<"Use PREVIOUS baseline"<<std::endl;
+						}
+						else
+						{
+							preTemplateTransform = baseTemplateTransform;
+							std::cout<<"Use NEW baseline"<<std::endl;
+						}
 					}
-					else
+					else if(cameraType == CANON)
 					{
-						preTemplateTransform = baseTemplateTransform;
-						std::cout<<"Use NEW baseline"<<std::endl;
+						if(   baseTemplateTransform(0,0) < 0.9f 	//Not align well with x axis
+					/*	   || fabs(baseTemplateTransform(1,3)-preTemplateTransform(1,3)) > xDifferenceThresh	// y translation too large 
+						   || fabs(baseTemplateTransform(2,3)-preTemplateTransform(2,3)) > zDifferenceThresh	// z translation too large
+						   || baseTemplateTransform(1,1) < xAlignThresh 	//Not align well with y axis
+						   || baseTemplateTransform(2,2) < zAlignThresh 	//Not align well with z axis
+					*/	  )
+						{
+							baseTemplateTransform = preTemplateTransform;
+							pc_transformedTemplate->clear();
+							pcl::transformPointCloud(*pc_baseTemplate, *pc_transformedTemplate, baseTemplateTransform*baseTemplateInitTransform.inverse());
+							std::cout<<"Use PREVIOUS baseline"<<std::endl;
+						}
+						else
+						{
+							preTemplateTransform = baseTemplateTransform;
+							std::cout<<"Use NEW baseline"<<std::endl;
+						}
 					}
 				}
-			}
-			else
-			{
-				std::cout<<"btm pc size too small"<<std::endl;
-				baseTemplateTransform = preTemplateTransform;
-				pc_transformedTemplate->clear();
-				pcl::transformPointCloud(*pc_baseTemplate, *pc_transformedTemplate, baseTemplateTransform*baseTemplateInitTransform.inverse());
-				std::cout<<"Use PREVIOUS baseline"<<std::endl;
-			}
+				else
+				{
+					std::cout<<"btm pc size too small"<<std::endl;
+					baseTemplateTransform = preTemplateTransform;
+					pc_transformedTemplate->clear();
+					pcl::transformPointCloud(*pc_baseTemplate, *pc_transformedTemplate, baseTemplateTransform*baseTemplateInitTransform.inverse());
+					std::cout<<"Use PREVIOUS baseline"<<std::endl;
+				}
 
-			//pick two vectors on the yz plane of the template and form a plane	
-			Eigen::Vector3f v0(0.f, 1.f, 0.f);
-			Eigen::Vector3f v1(0.f, 0.f, -1.f);
-			Eigen::Vector3f v2(1.f, 0.f, 0.f);
+				//pick two vectors on the yz plane of the template and form a plane	
+				Eigen::Vector3f v0(0.f, 1.f, 0.f);
+				Eigen::Vector3f v1(0.f, 0.f, -1.f);
+				Eigen::Vector3f v2(1.f, 0.f, 0.f);
 
-			v0 = baseTemplateTransform.block<3,3>(0,0)*v0;
-			v1 = baseTemplateTransform.block<3,3>(0,0)*v1;
-			v2 = baseTemplateTransform.block<3,3>(0,0)*v2;
+				v0 = baseTemplateTransform.block<3,3>(0,0)*v0;
+				v1 = baseTemplateTransform.block<3,3>(0,0)*v1;
+				v2 = baseTemplateTransform.block<3,3>(0,0)*v2;
 
-			Eigen::Vector3f v3(v1(0),v1(1),v1(2));
+				Eigen::Vector3f v3(v1(0),v1(1),v1(2));
 
-			// intersection of right angle template
-			Eigen::Matrix3f rotationMatrix;
-			rotationMatrix = Eigen::AngleAxisf(-M_PI/180.*15., v0);
+				// intersection of right angle template
+				Eigen::Matrix3f rotationMatrix;
+				rotationMatrix = Eigen::AngleAxisf(-M_PI/180.*15., v0);
 
-			v1 = rotationMatrix*v1;
+				v1 = rotationMatrix*v1;
 
-			Eigen::Vector3f cross;
-			cross = v0.cross(v1);
+				Eigen::Vector3f cross;
+				cross = v0.cross(v1);
 
-			Eigen::Matrix3f rotationMatrix2;
-			rotationMatrix2 = Eigen::AngleAxisf(M_PI/180.*1., v0);
+				Eigen::Matrix3f rotationMatrix2;
+				rotationMatrix2 = Eigen::AngleAxisf(M_PI/180.*15., v0);
 
-			v3 = rotationMatrix2 * v3;
+				v3 = rotationMatrix2 * v3;
 
-			Eigen::Vector3f crossBack;
-			crossBack = v0.cross(v3);
+				Eigen::Vector3f crossBack;
+				crossBack = v0.cross(v3);
 			
-			Eigen::Vector3f pointOnPlane = v0*500.f + baseTemplateTransform.block<3,1>(0,3);
+				Eigen::Vector3f pointOnPlane = v0*500.f + baseTemplateTransform.block<3,1>(0,3);
 		
-			pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_soil(new pcl::PointCloud<pcl::PointXYZRGB>);
+				pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_soil(new pcl::PointCloud<pcl::PointXYZRGB>);
 
-			// save points above plane
-			pc_tmp->clear();
-			for(int i=0; i<pcl_pcVec[0]->points.size(); i++)
-			{
-				Eigen::Vector3f point(pcl_pcVec[0]->points[i].x, pcl_pcVec[0]->points[i].y, pcl_pcVec[0]->points[i].z);
-				point = point -20.f*v2 - pointOnPlane;
+				// save points above plane
+				pc_tmp->clear();
+				for(int i=0; i<pcl_pcVec[0]->points.size(); i++)
+				{
+					Eigen::Vector3f point(pcl_pcVec[0]->points[i].x, pcl_pcVec[0]->points[i].y, pcl_pcVec[0]->points[i].z);
+					point = point -20.f*v2 - pointOnPlane;
 
-				if(point.dot(cross) < 0.0f && point.dot(crossBack) < 0.0f)
-				{
-					// plant points
-					pc_tmp->push_back(pcl_pcVec[0]->points[i]);
-					//pc_btmPart->points[i].g = 255;
+					if(point.dot(cross) < 0.0f && point.dot(crossBack) < 0.0f)
+					{
+						// plant points
+						pc_tmp->push_back(pcl_pcVec[0]->points[i]);
+						//pc_btmPart->points[i].g = 255;
+					}
+					else 
+					{
+						pcl_pcVec[0]->points[i].b = 200;
+						pcl_pcVec[0]->points[i].g = 200;
+						pc_soil->push_back(pcl_pcVec[0]->points[i]);
+					}
 				}
-				else 
-				{
-					pcl_pcVec[0]->points[i].b = 200;
-					pcl_pcVec[0]->points[i].g = 200;
-					pc_soil->push_back(pcl_pcVec[0]->points[i]);
-				}
+
+				pcl_pcVec[0]->clear();
+				*pcl_pcVec[0] += *pc_tmp;	
+
+				// update rootline point 0
+				rootPoint0.x = pointOnPlane(0);
+				rootPoint0.y = pointOnPlane(1);
+				rootPoint0.z = pointOnPlane(2);
+				rootLineDir.x = v0(0);
+				rootLineDir.y = v0(1);
+				rootLineDir.z = v0(2);
+
+				//pcViewer->addPointCloud(pc_transformedTemplate, "align", 0);
+
+				pcViewer->addPointCloud(pc_soil, "soil", 0);
+
+				pcViewer->spinOnce(pcl_view_time);
+				
+				// Euclidean cluster, remove small clusters
+				pc_tmp->clear();	
+
+				pfe.smallClusterRemoval(pcl_pcVec[0], clusterTolerance, minClusterSize, pc_tmp);	
+	
+				pcl_pcVec[0]->clear();
+
+				*pcl_pcVec[0] += *pc_tmp;
 			}
-
-			pcl_pcVec[0]->clear();
-			*pcl_pcVec[0] += *pc_tmp;	
-
-			// update rootline point 0
-			rootPoint0.x = pointOnPlane(0);
-			rootPoint0.y = pointOnPlane(1);
-			rootPoint0.z = pointOnPlane(2);
-			rootLineDir.x = v0(0);
-			rootLineDir.y = v0(1);
-			rootLineDir.z = v0(2);
-
-			pcViewer->addPointCloud(pc_soil, "soil", 0);
-			//pcViewer->addPointCloud(pc_transformedTemplate, "align", 0);
+#endif	
 
 			rootPoint1.x = rootPoint0.x+rootLineDir.x*1000.f;
 			rootPoint1.y = rootPoint0.y+rootLineDir.y*1000.f;
@@ -2035,18 +2305,6 @@ int main(int argc , char** argv)
 			rootPoint2.x = rootPoint0.x-rootLineDir.x*1000.f;
 			rootPoint2.y = rootPoint0.y-rootLineDir.y*1000.f;
 			rootPoint2.z = rootPoint0.z-rootLineDir.z*1000.f;
-					
-			pcViewer->addLine(rootPoint1, rootPoint2, 0.0, 0.0, 1.0, "root line", 0);
-
-
-			// Euclidean cluster, remove small clusters
-			pc_tmp->clear();	
-
-			pfe.smallClusterRemoval(pcl_pcVec[0], clusterTolerance, minClusterSize, pc_tmp);			
-
-			pcl_pcVec[0]->clear();
-
-			*pcl_pcVec[0] += *pc_tmp;
 
 			pointCloudSize = 0;
 			for(int i=0; i<pcl_pcVec.size(); i++)
@@ -2322,7 +2580,7 @@ int main(int argc , char** argv)
 			middle_vector = homo_vector.block<3,1>(0,0);
 
 #endif
-			// recompute eigen vectors again after the alignment and get the axis aligned bounding box
+			// axis aligned bounding box
 			pc_tmp->clear();
 			for(int i=0; i<pcl_pcVec.size(); i++)
 				*pc_tmp += *pcl_pcVec[i];
@@ -2357,9 +2615,9 @@ int main(int argc , char** argv)
 
 			pcViewer->addPointCloud(pc_voxelDown, "pc0", 0);
 
-			ofstream out("heightwidthexp.txt", ios::app);
+			ofstream out("heightwidthexp.csv", ios::app);
 
-			out<<std::endl<<"range:"<< curRange<<" row:"<<curRow<<" dateID:"<<dateID<<" fieldID:"<<fieldID<<" range length"<<max_point_AABB.y-min_point_AABB.y<<std::endl;			
+			out<<std::endl<<"range:"<< curRange<<" row:"<<curRow<<" dateID:"<<dateID<<" fieldID:"<<fieldID<<" range length:"<<max_point_AABB.y-min_point_AABB.y<<std::endl;			
 		
 			for(int n=1; n<=128; n++)
 			{
@@ -2379,7 +2637,7 @@ int main(int argc , char** argv)
 
 				shapeName = "AABB"+std::to_string(n);
 
-				pcViewer->addCube (min_point_AABB.x, weightedMedianHeight1, min_point_AABB.y, max_point_AABB.y, weightedMedianWidth1, max_point_AABB.z, 1.0, 1.0, 0.0, shapeName);
+				//pcViewer->addCube (min_point_AABB.x, weightedMedianHeight1, min_point_AABB.y, max_point_AABB.y, weightedMedianWidth1, max_point_AABB.z, 1.0, 1.0, 0.0, shapeName);
 				pcViewer->setRepresentationToWireframeForAllActors(); 	
 
 				pcViewer->spinOnce(100);
@@ -2422,15 +2680,19 @@ int main(int argc , char** argv)
 #endif	
 			// slice point cloud 
 			std::string sliceAxis = "y";
+
+			t1 = (double)getTickCount();
 			pfe.computeSlicedSubPointCloudVec(pc_tmp, numSubBoxUsed, sliceAxis);
 			
 			// DENSITY WEIGHTED MEDIAN PLANT HEIGHT
-			t1 = (double)getTickCount();
+			
 
 			float weightedMedianHeight = 0;
 			float weightedMedianWidth = 0;
 
 			pfe.weightedMedianHeightWidth(weightedMedianHeight, weightedMedianWidth);
+
+			std::cout << "time of height and width: " << ((double)getTickCount() - t1) / getTickFrequency() << std::endl;
 
 			// refine bounding box
 			min_point_AABB.z = weightedMedianWidth;
@@ -2440,9 +2702,7 @@ int main(int argc , char** argv)
 			// subtract soil height
 			weightedMedianHeight -= min_point_AABB.x;
 			
-			weightedMedianWidth = max_point_AABB.z - weightedMedianWidth;
-
-			//std::cout << "weighted median height time:" << ((double)getTickCount() - t1) / getTickFrequency() << std::endl;
+			weightedMedianWidth = max_point_AABB.z - weightedMedianWidth;	
 
 			std::cout<<"weighted median height of "<< numSubBoxUsed << " sub boxs:" << weightedMedianHeight<<std::endl;
 
@@ -2487,10 +2747,12 @@ int main(int argc , char** argv)
 			btmCornerPoint.r = 255; btmCornerPoint.g = 0; btmCornerPoint.b = 0;
 			pcl_pcVec[0]->push_back(btmCornerPoint);*/
 
-			t1 = (double)cv::getTickCount();
+			
 			pc_tmp->clear();
 			for(int i=0; i<pcl_pcVec.size(); i++)
 				*pc_tmp += *pcl_pcVec[i];
+
+			
 
 			// sliced convex hull volume
 			std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> cloudHullVec;
@@ -2502,8 +2764,15 @@ int main(int argc , char** argv)
 			double volume = 0.;
 
 			//double area = 0.;
+			
+			t1 = (double)cv::getTickCount();
 
-			volume = pfe.getPlantVolume(volumeThresh, cloudHullVec, verticesChullVec, numValidSubBox);
+			std::vector<double> sub_plant_volume_vec;
+			std::vector<double> sub_plant_chull_area_vec;
+			double slice_volume = 0.;
+			volume = pfe.getPlantVolume(volumeThresh, cloudHullVec, verticesChullVec, numValidSubBox, sub_plant_volume_vec, slice_volume, sub_plant_chull_area_vec);
+
+			std::cout << "time of volume: " << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
 
 			double adjustFactor = (double)numValidSubBox/(double)numSubBoxUsed;
 
@@ -2518,8 +2787,7 @@ int main(int argc , char** argv)
 			//std::vector<pcl::Vertices> vertices_chull;
 			//pfe.getConvexHull(pc_tmp, cloud_hull, vertices_chull, volume, area);
 			
-
-			//std::cout << "Convex hull time:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
+			
 			double vegetationVolume = volume/*chull.getTotalVolume()*/*1e-9;
 			std::cout<<"Plant Volume (m^3):"<<vegetationVolume<<" ";
 			double VVI = vegetationVolume/cubeVolume;
@@ -2540,8 +2808,7 @@ int main(int argc , char** argv)
 
 				pc_projectVec.push_back(pc_project);
 
-				if(i==1)
-				pcViewer->addPointCloud(pc_projectVec[i], "plant project"+std::to_string(i), 0);
+				if(i==1) pcViewer->addPointCloud(pc_projectVec[i], "plant project"+std::to_string(i), 0);
 			}
 
 			// projection occupancy
@@ -2591,39 +2858,70 @@ int main(int argc , char** argv)
 #if 1
 			// TRIANGLE MESH
 			// Moving least square smoothing
-			//t1 = (double)cv::getTickCount();
+			t1 = (double)cv::getTickCount();
 			pc_tmp->clear();
 			for(int i=0; i<pcl_pcVec.size(); i++)
 				*pc_tmp += *pcl_pcVec[i];
 
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr mls_points(new pcl::PointCloud<pcl::PointXYZRGB>);
-			
+
+
+			//pcl::copyPointCloud(*pc_tmp, *mls_points);		
 			pfe.movingLeastSquareSmooth(pc_tmp, mls_points);
 
-			//std::cout << "MLS smoothing:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
-			
-			//t1 = (double)cv::getTickCount();
+
+			std::cout<<"size: "<<mls_points->points.size()<<std::endl;
+
+			std::cout << "MLS smoothing:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
+
+			t1 = (double)cv::getTickCount();
 			pcl::PolygonMesh triangles;	
 			pfe.greedyTriangulation(mls_points, triangles);
-			//std::cout << "Normal+Triangulation:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
+			std::cout << "Normal+Triangulation:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
 
 			// calculate total area
+			t1 = (double)cv::getTickCount();
 			leafArea = pfe.getMeshAreaSum(triangles)*1e-6;
+			std::cout << "time of total leaf area: " << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
 			
 			LAI = leafArea/groundArea;
 			std::cout<<"Total leaf area (m^2):"<<leafArea<<" ";
 			std::cout<<"LAI:"<<LAI<<std::endl;
 			
 #endif
+			/*pcViewer->addPointCloud(pc_originBaseTemplate, "origin base template", 0);
+			pcViewer->addSphere (pc_originBaseTemplate->points[25], 20, 1., 0., 0.0, "sphere", 0);
+
+			pcViewer->spin();*/
+
+	
+			// calculate hedge width at 3 levels
+			std::vector<float> three_hedge_widths(3, 1e5f);
+
+			pfe.compute3LevelHedgeWidths(pc_tmp, numSubBoxUsed, min_point_AABB, max_point_AABB, three_hedge_widths);
+
+			for(auto & h : three_hedge_widths) { h = max_point_AABB.z - h; cout<<h<<" ";}cout<<"\n";
+
+
+#if 1
 			std::string displayText = "Height(mm): "+std::to_string(weightedMedianHeight) + "\n\nWidth(mm): " + std::to_string(weightedMedianWidth) 
 						+ "\n\nVolume(m^3): " + std::to_string(vegetationVolume) + "\n\nVolume Index: " + std::to_string(VVI) 
 						+ "\n\nArea(m^2): " + std::to_string(leafArea)  + "\n\nArea Index: " + std::to_string(LAI);
 
 			pcViewer->addText(displayText, 50, 200, "text", 0);
+#endif
 
-			// save result
+			// save 
 			result<<fieldID<<","<<curRange<<","<<curRow<<","<<weightedMedianHeight<<","<<weightedMedianWidth<<","<<vegetationVolume<<","<<VVI<<","/*<<chullArea<<","*/;
-			result<<leafArea<<","<<LAI<<","<<numValidSubBox<<","<<numSubBoxUsed<<","<<getEasternTime()<<std::endl;
+			result<<leafArea<<","<<LAI<<","<<Centroid2HeightRatio<<","<<projectOccupancy[1]<<","<<numValidSubBox<<","<<numSubBoxUsed<<","<<getEasternTime()<<","<<slice_volume*1e-9;
+
+			for(auto& v : sub_plant_volume_vec) result <<","<<v*1e-9;
+
+			for(auto& a : sub_plant_chull_area_vec) result <<","<<a*1e-6;
+
+			for(auto& h : three_hedge_widths) result<<","<<h;
+			
+			result <<std::endl;
 				
 			
 			//pcViewer->addLine(soilPlaneLineProjection->at(0), soilPlaneLineProjection->at(1), "line_soil");
@@ -2634,6 +2932,10 @@ int main(int argc , char** argv)
 			// vegetation bounding box
 			//pcViewer->addCube (min_point_AABB.x, max_point_AABB.x, min_point_AABB.y, max_point_AABB.y, min_point_AABB.z, max_point_AABB.z, 1.0, 1.0, 1.0, "AABB");
 
+			pcViewer->addLine(rootPoint1, rootPoint2, 0.0, 0.0, 1.0, "root line", 0);
+
+			//pcViewer->addPointCloud(pc_rootLinePoints, "root line points", 0);
+			
 			pcl::PointXYZ p1(min_point_AABB.x, min_point_AABB.y, min_point_AABB.z);
 			pcl::PointXYZ p7(max_point_AABB.x, max_point_AABB.y, max_point_AABB.z);				
 			pcl::PointXYZ p2 = p1; p2.y = p7.y;
@@ -2656,6 +2958,22 @@ int main(int argc , char** argv)
 			pcViewer->addLine(p3, p7, 1.0, 1.0, 1.0, "line11", 0);
 			pcViewer->addLine(p4, p8, 1.0, 1.0, 1.0, "line12", 0);
 
+			//low width line end points
+			float height_step = (max_point_AABB.x - min_point_AABB.x)/3.f;
+
+			for(int width_line_id=0; width_line_id<3; width_line_id++)
+			{
+				const float x = min_point_AABB.x + (width_line_id+0.5f)*height_step;
+
+				pcl::PointXYZ p_0(x ,max_point_AABB.y, max_point_AABB.z);
+
+				pcl::PointXYZ p_1(x ,max_point_AABB.y, max_point_AABB.z - three_hedge_widths[width_line_id]);
+
+				pcViewer->addLine(p_0, p_1, 0.0, 1.0, 0.0, "width"+std::to_string(width_line_id), 0);
+			}
+				
+			
+
 
 			//visualize point cloud		
 			//pcViewer->addPointCloud(pcl_pcVec[0], "pc0", 0);
@@ -2667,6 +2985,8 @@ int main(int argc , char** argv)
 			//pcViewer->addPointCloud(pc_outsideAABB, "outside AABB", 0);
 			//pcViewer->addPointCloud(pc_upperHalf, "upperHalf", 0);
 			pcViewer->addPointCloud(mls_points, "mls", 0);
+
+			
 			
 			// draw convex hull
 			//pcViewer->addPolygonMesh<pcl::PointXYZRGB>(cloud_hull, vertices_chull, "convex hull", 0);
@@ -2677,8 +2997,13 @@ int main(int argc , char** argv)
 			
 			pcViewer->setCameraPosition(399, 855, -1012, 1,0,0, 0);
 			pcViewer->resetCamera();
+
+			pcViewer->spinOnce(pcl_view_time);
+
+			for(int i=0; i<cloudHullVec.size(); i++)
+				pcViewer->addPolygonMesh<pcl::PointXYZRGB>(cloudHullVec[i], verticesChullVec[i], "convex hull"+std::to_string(i), 0);
 			
-			pcViewer->spin();
+			pcViewer->spinOnce(pcl_view_time);
 
 			pcViewer->removePointCloud("mls", 0);
 			pcViewer->removePointCloud("plant outliers", 0);
@@ -2687,23 +3012,18 @@ int main(int argc , char** argv)
 			pcViewer->removePointCloud("plant project1", 0);
 			pcViewer->removePointCloud("root line", 0);
 
+			for(int i=0; i<cloudHullVec.size(); i++)
+				pcViewer->removePolygonMesh("convex hull"+std::to_string(i), 0);
+
 			pcViewer->addPolygonMesh(triangles,"meshes",0);
 
-			pcViewer->spin();
-
-			for(int i=0; i<cloudHullVec.size(); i++)
-				pcViewer->addPolygonMesh<pcl::PointXYZRGB>(cloudHullVec[i], verticesChullVec[i], "convex hull"+std::to_string(i), 0);
-
-			pcViewer->spin();
-			
-			//pcViewer->spinOnce(2000);
-
+			pcViewer->spinOnce(pcl_view_time);
 #endif
 		}
 	}
 
 	cv::destroyAllWindows();
-
+	fs.release();
 	result.close();
 
 	return 0;

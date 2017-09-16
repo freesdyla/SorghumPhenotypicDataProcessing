@@ -77,6 +77,7 @@ void PhenoFeatureExtraction::getConvexHull(pcl::PointCloud<pcl::PointXYZRGB>::Pt
 					   std::vector<pcl::Vertices>& vertices_chull, double& volume, double& area)
 {
 	pcl::ConvexHull<pcl::PointXYZRGB> chull;
+	chull.setDimension(3);
 	chull.setComputeAreaVolume(true);
 	
 	vertices_chull.clear();
@@ -98,14 +99,15 @@ void PhenoFeatureExtraction::getConvexHull(pcl::PointCloud<pcl::PointXYZRGB>::Pt
 }
 
 double PhenoFeatureExtraction::getPlantVolume(double volumeThresh, std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr>& cloudHullVec,
-					      std::vector<std::vector<pcl::Vertices>>& verticesChullVec, int & numSubBoxUsed)
+					      std::vector<std::vector<pcl::Vertices>>& verticesChullVec, int & numSubBoxUsed,
+				              std::vector<double> & sub_volume_vec, double & sliceVolume, std::vector<double> & sub_area_vec)
 {
 	double sumVolume = 0.;
 
 	if(slicedSubPointCloudVec.size() <= 0)
 		return sumVolume;
 
-	double sliceVolume = (_max_point_AABB.x-_min_point_AABB.x)*(_max_point_AABB.y-_min_point_AABB.y)
+	sliceVolume = (_max_point_AABB.x-_min_point_AABB.x)*(_max_point_AABB.y-_min_point_AABB.y)
 			     *(_max_point_AABB.z-_min_point_AABB.z)/slicedSubPointCloudVec.size();
 
 	numSubBoxUsed = 0;
@@ -113,6 +115,9 @@ double PhenoFeatureExtraction::getPlantVolume(double volumeThresh, std::vector<p
 	subBoxValidMask.clear();
 
 	subBoxValidMask.resize(slicedSubPointCloudVec.size());
+
+	sub_volume_vec.clear();
+	sub_area_vec.clear();
 
 	for(int i=0; i<slicedSubPointCloudVec.size(); i++)
 	{
@@ -125,6 +130,11 @@ double PhenoFeatureExtraction::getPlantVolume(double volumeThresh, std::vector<p
 		double area = 0.; 
 		
 		getConvexHull(slicedSubPointCloudVec[i], cloud_hull, vertices_chull, volume, area);
+			
+		sub_volume_vec.push_back(volume);
+		sub_area_vec.push_back(area);
+
+		//std::cout<<slicedSubPointCloudVec[i]->points.size()<<" "<<volume<<"\n";
 
 		subBoxValidMask[i] = false;
 
@@ -160,7 +170,7 @@ double PhenoFeatureExtraction::getMeshAreaSum(const pcl::PolygonMesh & triangles
 		leafArea += (va.cross(vb)).norm();
 	}
 
-	return leafArea*0.5f;
+	return leafArea*0.5;
 }
 
 void PhenoFeatureExtraction::movingLeastSquareSmooth(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_in, pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_out)
@@ -425,6 +435,41 @@ float PhenoFeatureExtraction::refineZMax(pcl::PointCloud<pcl::PointXYZRGB>::Ptr 
 	}
 
 	return mass_center(2);
+}
+
+void PhenoFeatureExtraction::compute3LevelHedgeWidths(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud, const int numSubBox,
+							const pcl::PointXYZRGB & min_point_AABB, const pcl::PointXYZRGB & max_point_AABB,
+							std::vector<float> & three_hedge_widths) 
+{
+
+	if(three_hedge_widths.size() != 3) return;
+
+	pcl::PassThrough<pcl::PointXYZRGB> pass;
+	pass.setFilterFieldName("x");
+	pass.setFilterLimitsNegative(false);
+
+	float height_step = (max_point_AABB.x - min_point_AABB.x)/3.0f;
+
+	pass.setInputCloud(cloud);
+
+	for(int i=0; i<3; i++)
+	{
+		std::vector<int> indices;
+
+		pass.setFilterLimits(min_point_AABB.x + i*height_step, min_point_AABB.x + (i+1)*height_step);
+
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr layer_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+		pass.filter(*layer_cloud);
+
+		computeSlicedSubPointCloudVec(layer_cloud, numSubBox, "y");
+
+		float weightedMedianHeight, weightedMedianWidth;
+
+		weightedMedianHeightWidth(weightedMedianHeight, weightedMedianWidth);
+
+		three_hedge_widths[i] = weightedMedianWidth;
+	}
 }
 
 void PhenoFeatureExtraction::computeMomentOfInertiaAndProjectionOccupancy(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_in, std::string axis, double & moi, double & occupancy)

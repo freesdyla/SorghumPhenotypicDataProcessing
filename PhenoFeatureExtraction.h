@@ -52,7 +52,8 @@ public:
 	void getConvexHull(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_in, pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_hull, std::vector<pcl::Vertices>& vertices_chull, double& volume, double& area);
 
 	double getPlantVolume( double volumeThresh, std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr>& cloudHullVec,	
-	                       std::vector<std::vector<pcl::Vertices>>& verticesChullVec, int & numSubBoxUsed);
+	                       std::vector<std::vector<pcl::Vertices>>& verticesChullVec, int & numSubBoxUsed, std::vector<double> & sub_volume_vec, double & slice_volume, 
+			       std::vector<double> & sub_area_vec);
 
 	double getMeshAreaSum(const pcl::PolygonMesh & triangles);
 	
@@ -69,6 +70,9 @@ public:
 				pcl::PointCloud<pcl::PointXYZRGB>::Ptr outliers);
 
 	float refineZMax(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_in, float initZMax, int iter);
+
+	void compute3LevelHedgeWidths(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud, const int numSubBox, const pcl::PointXYZRGB & min_point_AABB, const pcl::PointXYZRGB & max_point_AABB,
+							std::vector<float> & three_hedge_widths);
 
 	void computeMomentOfInertiaAndProjectionOccupancy(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_in, std::string axis, double & moi, double & occupancy);
 };
