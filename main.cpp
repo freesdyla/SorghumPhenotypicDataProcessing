@@ -47,7 +47,8 @@
 #include "StalkDetection.h"
 #include "StereoMatching.h"
 #include "HeightDetection.h"
-#include "PatchMatchStereoGPU.h"
+//#include "PatchMatchStereoGPU.h"
+#include "Stereo3DMST.h"
 #include "PhenoFeatureExtraction.h"
 
 #include <boost/filesystem.hpp>
@@ -124,6 +125,8 @@ double volumeThresh = 0.3;	//sub convex hull volume > 0.2*subAABB volume
 
 int wait_key_time = 100;
 int pcl_view_time = 100;
+
+int stereo_method = 0; //0:3dmst	1:sgbm
 
 
 FileStorage fs;
@@ -663,9 +666,9 @@ void exit_handler(int s)
 
 
 
-
 int main(int argc , char** argv)
 {
+
 	if(argc != 6)
 	{
 		std::cout<<"range, row, date, field, plant base detect mode\n";
@@ -680,6 +683,8 @@ int main(int argc , char** argv)
 	pt.view_time = wait_key_time;
 
 	fs["pcl_view_time"] >> pcl_view_time;
+	
+	fs["stereo_method"] >> stereo_method;	//0:3dmst	1:sgbm
 
 	Map2FileMapping M;
 
@@ -710,30 +715,67 @@ int main(int argc , char** argv)
 	return 0;*/
 
 	signal(SIGINT, exit_handler);
-
 	
+	boost::shared_ptr<pcl::visualization::PCLVisualizer> pcViewer(new pcl::visualization::PCLVisualizer("3D Viewer"));
+	pcViewer->registerPointPickingCallback(&pp_callback);
+	pcViewer->addCoordinateSystem (400.0);
+	pcViewer->setSize(1100,700);
+	
+	std::map<std::string, double> calib_correct_lookup_2016;
+
 	/*-------------------------------------------------------------------------------------------*/
 
 	StereoMatching sm;
 
-	if(fieldID == A2016)
-	{
-		if(dateID == 0)
+	if(fieldID == A2016) {
+	
+		if(dateID == 0) {
+		
 			pt.loadAllStereoArrayParam(CANON, "CameraParam2016_1");
-		else if(dateID == 1)
+			
+			calib_correct_lookup_2016["28.5"] = 30;
+			calib_correct_lookup_2016["29.5"] = 30;
+			calib_correct_lookup_2016["30.5"] = 40;
+			calib_correct_lookup_2016["31.5"] = 25;
+			calib_correct_lookup_2016["32.5"] = 25;
+			calib_correct_lookup_2016["33.5"] = 25;
+			calib_correct_lookup_2016["34.5"] = 10;
+			calib_correct_lookup_2016["35.5"] = 25;
+			calib_correct_lookup_2016["36.5"] = 20;
+			calib_correct_lookup_2016["37.5"] = 32;
+			calib_correct_lookup_2016["38.5"] = 36;
+			calib_correct_lookup_2016["39.5"] = 15;
+			calib_correct_lookup_2016["28.7"] = 30;
+			calib_correct_lookup_2016["29.7"] = 25;
+			calib_correct_lookup_2016["30.7"] = 30;
+			calib_correct_lookup_2016["31.7"] = 30;
+			calib_correct_lookup_2016["32.7"] = 40;
+			calib_correct_lookup_2016["33.7"] = 40;
+			calib_correct_lookup_2016["34.7"] = 20;
+			calib_correct_lookup_2016["35.7"] = 15;
+			calib_correct_lookup_2016["36.7"] = 15;
+			calib_correct_lookup_2016["37.7"] = 45;
+			calib_correct_lookup_2016["38.7"] = 35;
+			calib_correct_lookup_2016["39.7"] = 35;
+		}
+		else if(dateID == 1) {
+		
 			pt.loadAllStereoArrayParam(CANON, "CameraParam2016_2");
+		}
 
 		cameraType = CANON;
 		scale_stereo = 0.2;//15;
+		
+
 	}
-	else if(fieldID == KELLY || fieldID == BURKEY) 
-	{
+	else if(fieldID == KELLY || fieldID == BURKEY) 	{
+	
 		pt.loadAllStereoArrayParam(CANON, "CameraParam2015");
 		cameraType = CANON;
 		scale_stereo = 0.2;//15;
 	}
-	else
-	{
+	else {
+	
 		pt.loadAllStereoArrayParam(PG, "CameraParam2014");
 		cameraType= PG;
 	}
@@ -795,21 +837,19 @@ int main(int argc , char** argv)
 	{
 		double offset;
 	
-		if(dateID == 0)
-		{
+		if(dateID == 0)	{
+		
 			fs["offset_A16_0"] >> offset;
 			pt.stereoArrayParamVec[0]._M2.at<double>(1, 2) += offset;	//+ move right image up
 		}
-		else
-		{
+		else {
+		
 			fs["offset_A16_1_b"] >> offset;
 			pt.stereoArrayParamVec[0]._M2.at<double>(1, 2) += offset;	//+ move right image up
 
 			fs["offset_A16_1_m"] >> offset;
 			pt.stereoArrayParamVec[2]._M2.at<double>(1, 2) += offset;	//+ move right image up
 		}
-		
-
 	}
 
 	// load	all data folders
@@ -988,13 +1028,6 @@ int main(int argc , char** argv)
 		stereoImgNum = A2016FolderImgVec[dateID].imgNum;
 	}
 
-
-	boost::shared_ptr<pcl::visualization::PCLVisualizer> pcViewer(new pcl::visualization::PCLVisualizer("3D Viewer"));
-	pcViewer->registerPointPickingCallback(&pp_callback);
-	pcViewer->addCoordinateSystem (400.0);
-	pcViewer->setSize(1100,700);
-
-
 	std::vector<std::string> imgNameVec;
 
 	std::vector<std::vector<int> > plantLocationVec;
@@ -1004,7 +1037,7 @@ int main(int argc , char** argv)
 
 	std::cout<<"result file open: "<<result.is_open()<<std::endl;
 
-	result << std::endl << "field(AH-0;CH1-1;CH2-2),range,row,plant height(mm),hedge width(mm),volume(m^3),VVI,leaf area(m^2),LAI,Centroid2HeightRatio,projectOccupancyAlongRow,NumValidSubBox,numSubBox,time,slice volume(m^3)";
+	result << std::endl << "field(AH-0;CH1-1;CH2-2),range,row,plant height(mm),hedge width(mm),volume(m^3),VVI,leaf area(m^2),VAI,Centroid2HeightRatio,projectOccupancyAlongRow,NumValidSubBox,numSubBox,time,slice volume(m^3)";
 
 	for(int i=1; i<=numSubBoxUsed; i++) result<<",sub volume " <<i<<" (m^3)";
 
@@ -1165,6 +1198,8 @@ int main(int argc , char** argv)
 				continue;
 			}
 			
+			for(auto name : imgNameVec) cout<<name<<"\n";
+			
 			std::vector<cv::Mat> imgVec;
 			
 			if(cameraType == PG)
@@ -1183,6 +1218,20 @@ int main(int argc , char** argv)
 					continue;
 				}
 			}
+
+		
+			int num_valid_images = 0;
+
+			for( auto & img : imgVec ) {
+
+				if(!img.empty()) ++num_valid_images;
+			}
+
+			if( !(num_valid_images == 2 || num_valid_images == 4 || num_valid_images == 6) ) {
+
+				std::cout <<std::endl<< "Missing stereo image for range "<<range<<" row "<<row<<std::endl;
+				continue;
+			}	
 
 			std::vector<cv::Mat> cvNextDateImgVec;
 
@@ -1214,7 +1263,19 @@ int main(int argc , char** argv)
 			ImagePackage ip;
 
 			//double t = (double)getTickCount();
-			std::cout<<std::endl<<"Range:"<<curRange<<" Row:"<<curRow<<std::endl;			
+			std::cout<<std::endl<<"Range:"<<curRange<<" Row:"<<curRow<<std::endl;		
+
+#if 0			
+			if(fieldID == A2016) {
+			
+				if(dateID == 0) {
+				
+					std::string key = std::to_string(curRange)+"."+std::to_string(curRow);
+					//+ move right image up
+					pt.stereoArrayParamVec[0]._M2.at<double>(1, 2) += calib_correct_lookup_2016.find(key)->second;	
+				}
+			}
+#endif
 
 			std::vector<cv::Mat> stereoPairs;
 	
@@ -1226,6 +1287,7 @@ int main(int argc , char** argv)
 				std::vector<cv::Mat> RectifyStereoPairVec;
 				pt.rectifyStereoPair(PG, stereoParamIdx, imgVec[2 * j], imgVec[2 * j + 1], RectifyStereoPairVec, true, false, scale_stereo);
 				cvOrigionalImgVec.push_back(RectifyStereoPairVec[0]);
+
 
 				// prepare stereo pair, scale image and Q matrix
 				std::vector<cv::Mat> stereoPair;
@@ -1262,14 +1324,13 @@ int main(int argc , char** argv)
 									+ "_hi_" + std::to_string(stereoPair[0].rows) + ".bin";
 
 				bool saved_disp_file_exists = false;
-
 				
 #if 1
 				// stereo matching and reproject
-				if (1)
-				{
-					if(!fileExists(saved_disp_file_name))
-					{
+				if( !stereoPair[0].empty() && !stereoPair[1].empty() ) {
+
+					if(stereo_method != 0 || !fileExists(saved_disp_file_name)) {
+					
 						double t = (double)cv::getTickCount();
 						// PatchMatchStereo GPU
 						cv::Mat cvRightDisp_f;
@@ -1277,35 +1338,38 @@ int main(int argc , char** argv)
 						//PatchMatchStereoHuberGPU(stereoPair[0], stereoPair[1], 5, 0, 96, 15, 3.0, true, disp, cvRightDisp_f);
 						//PatchMatchStereoGPU(stereoPair[0], stereoPair[1], 5, 0, 100, 10, 3.0, true, disp, cvRightDisp_f);
 
+	
+						if(stereo_method == 0) {
+							// save stereo image pair to mccnn folder
+							std::vector<int> compression_params;
+							compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
+							compression_params.push_back(9);
+							//imwrite("/home/lietang/mc-cnn-master/l.png", stereoPair[0], compression_params);
+							//imwrite("/home/lietang/mc-cnn-master/r.png", stereoPair[1], compression_params);
+							imwrite("l.png", stereoPair[0], compression_params);
+							imwrite("r.png", stereoPair[1], compression_params);
 
-	#if 1
-						// save stereo image pair to mccnn folder
-						std::vector<int> compression_params;
-						compression_params.push_back(CV_IMWRITE_PNG_COMPRESSION);
-						compression_params.push_back(9);
-						imwrite("/home/lietang/mc-cnn-master/l.png", stereoPair[0], compression_params);
-						imwrite("/home/lietang/mc-cnn-master/r.png", stereoPair[1], compression_params);
 
-						std::string data_cost = "MCCNN_acrt"; 
-						std::string smoothness_prior = "NL2TGV";
-						std::string left_name = "";
-						std::string right_name = "";
-						PatchMatchStereoNL2TGV(stereoPair[0], stereoPair[1], 50, 0, 120, 80, 1.0, false, disp, cvRightDisp_f, 
-								       data_cost, smoothness_prior, left_name, right_name);
-				
-						// change back to project working directory
-						int status = chdir("/media/lietang/SSD/PhenotypingDataProcessing");
-
-	#else
-						// 2nd argument is the number of dispairy, will be x16
-						sm.SGBMStereo(stereoPair, 7, true, disp);
-	#endif
+							std::string data_cost = "MCCNN_acrt"; 
+							std::string smoothness_prior = "NL2TGV";
+							std::string left_name = "";
+							std::string right_name = "";
+							//PatchMatchStereoNL2TGV(stereoPair[0], stereoPair[1], 50, 0, 120, 80, 1.0, false, disp, cvRightDisp_f, 
+							//		       data_cost, smoothness_prior, left_name, right_name);
+							stereo3dmst("l.png", "r.png", stereoPair[0], stereoPair[1], disp, cvRightDisp_f, data_cost, 120);
+			
+							// change back to project working directory
+							//int status = chdir("/media/lietang/SSD/PhenotypingDataProcessing");
+						}
+						else {	
+							// 2nd argument is the number of dispairy, will be x16
+							sm.SGBMStereo(stereoPair, 7, true, disp);
+						}
 
 						std::cout <<"stereo time:"<< ((double)cv::getTickCount() - t) / cv::getTickFrequency() << std::endl;
 
 						// remove steel bar and tire
-						if(cameraType==PG && plantSide == 0 && j == 0)
-						{
+						if(cameraType==PG && plantSide == 0 && j == 0) {
 							// wheel big chunk
 							//disp(cv::Range(1040/2, disp.rows), cv::Range(0, 610/2)) = 0;
 							// wheel upper part
@@ -1318,23 +1382,21 @@ int main(int argc , char** argv)
 							disp(cv::Range(500, disp.rows), cv::Range(0, 400)) = 0;
 							disp(cv::Range(470, 500), cv::Range(0, 350)) = 0;
 						}			
-					
+				
 						// remove border
 						int borderWidth = 50;
 						disp(cv::Range(0, borderWidth), cv::Range(0, disp.cols)) = 0.f;
 						disp(cv::Range(disp.rows-borderWidth, disp.rows), cv::Range(0, disp.cols)) = 0.f; 					
-					
-						if (cameraType==PG && j==0)
-						{
+				
+						if (cameraType==PG && j==0) {
+						
 							if (plantSide == 0)
 								disp(cv::Range(0, disp.rows), cv::Range(0, 170)) = 0;
 							else if (plantSide == 1)
 								disp(cv::Range(0, disp.rows), cv::Range(0, 120)) = 0;
 						}
 
-
 	#if 1
-				
 						// remove sky
 						if(cameraType == PG)
 						{
@@ -1345,7 +1407,7 @@ int main(int argc , char** argv)
 							cv::split(hsv, channels);
 							//cv::imshow("HSV", channels[0]);
 							//cv::waitKey(0);
-				
+			
 							for(int y=0; y<stereoPair[0].rows; y++)
 							{
 								for(int x=0; x<stereoPair[0].cols; x++)
@@ -1380,7 +1442,7 @@ int main(int argc , char** argv)
 							{
 								for(int x=0; x<stereoPair[0].cols; x++)
 								{
-								
+							
 									int b = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[0]);
 									int g = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[1]);
 									int r = (int)((cvColorImgVec[j].at<Vec3b>(y,x)).val[2]);
@@ -1395,12 +1457,12 @@ int main(int argc , char** argv)
 								}
 							}
 						}
-					
+				
 	#endif
 						saved_disp_file_exists = false;
 					}
-					else
-					{
+					else {
+					
 						saved_disp_file_exists = true;
 
 						const int rows = stereoPair[0].rows;
@@ -1411,14 +1473,13 @@ int main(int argc , char** argv)
 					}
 
 #if 1
-					if(!saved_disp_file_exists)
-					{
+					if(stereo_method == 0 && !saved_disp_file_exists) {
+					
 						ofstream my_file(saved_disp_file_name, std::ofstream::binary);
 						my_file.write((char*)disp.ptr<float>(0), sizeof(float)*disp.cols*disp.rows);
 						my_file.close();
 					}
 #endif
-
 
 // display disparity map
 #if 1
@@ -1431,16 +1492,32 @@ int main(int argc , char** argv)
 					//cv:destroyWindow("left img");
 					//cv:destroyWindow("right img");
 #endif
-					dispVec.push_back(disp);
-					cv::Mat cvPointCloud;
-					//f32 point cloud
-					cv::reprojectImageTo3D(disp, cvPointCloud, Q, true);
-					
-					cvPointCloudVec.push_back(cvPointCloud);
 				}
+
+
+				dispVec.push_back(disp);
+				cv::Mat cvPointCloud;
+				//f32 point cloud
+				if( !disp.empty() )
+					cv::reprojectImageTo3D(disp, cvPointCloud, Q, true);
+				
+				cvPointCloudVec.push_back(cvPointCloud);
+				
 #endif
 			}
-	
+
+#if 0
+			//reset
+			if(fieldID == A2016) {
+			
+				if(dateID == 0) {
+				
+					std::string key = std::to_string(curRange)+"."+std::to_string(curRow);
+					//+ move right image up
+					pt.stereoArrayParamVec[0]._M2.at<double>(1, 2) -= calib_correct_lookup_2016.find(key)->second;	
+				}
+			}
+#endif
 
 			//continue;
 			
@@ -1456,6 +1533,8 @@ int main(int argc , char** argv)
 
 				for (int k = 0; k < cvColorImgVec.size(); k++)
 				{
+					if( cvColorImgVec[k].empty() ) continue;
+
 					cv::Mat shrinked;
 					cv::resize(cvColorImgVec[k], shrinked, cv::Size(), scale_display, scale_display, CV_INTER_AREA);
 					
@@ -1465,7 +1544,7 @@ int main(int argc , char** argv)
 						cv::flip(shrinked, shrinked, 0);
 					}
 
-					if (k == 0)
+					if ( canvas.empty() )
 					{	
 						canvas.create(shrinked.rows, shrinked.cols * 3, CV_8UC3);
 						canvas = 0;
@@ -1481,6 +1560,8 @@ int main(int argc , char** argv)
 
 				for (int k = 0; k < cvNextDateColorImgVec.size(); k++)
 				{
+					if( cvNextDateColorImgVec[k].empty() ) continue;
+
 					cv::Mat shrinked;
 					cv::resize(cvNextDateColorImgVec[k], shrinked, cv::Size(), scale_display, scale_display, CV_INTER_AREA);
 					
@@ -1490,7 +1571,7 @@ int main(int argc , char** argv)
 						cv::flip(shrinked, shrinked, 0);
 					}
 
-					if (k == 0)
+					if ( nextDateCanvas.empty() )
 					{
 						nextDateCanvas.create(shrinked.rows, shrinked.cols * 3, CV_8UC3);
 						nextDateCanvas = 0;
@@ -1657,8 +1738,6 @@ int main(int argc , char** argv)
 
 					}
 
-
-
 					cv::destroyWindow("RGB Image");
 				}
 #endif
@@ -1793,39 +1872,45 @@ int main(int argc , char** argv)
 			for (int j = 0; j < cvPointCloudVec.size(); j++)
 			{
 				pcl::PointCloud<pcl::PointXYZRGB>::Ptr tmp_pc(new pcl::PointCloud<pcl::PointXYZRGB>());
-				cv::Mat pc = cvPointCloudVec[j];
-				cv::Mat bgr = cvColorImgVec[j];			
 
-				for (int y = 0; y < pc.rows; y++)
+				if( !cvPointCloudVec[j].empty() )
 				{
-					float* p_pc = pc.ptr<float>(y);
-					uchar* p_bgr = bgr.ptr<uchar>(y);
+					cv::Mat pc = cvPointCloudVec[j];
+					cv::Mat bgr = cvColorImgVec[j];			
 
-					for (int x = 0; x < pc.cols; x++)
+					for (int y = 0; y < pc.rows; y++)
 					{
-						float z = p_pc[3*x+2];
+						float* p_pc = pc.ptr<float>(y);
+						uchar* p_bgr = bgr.ptr<uchar>(y);
 
-						if (z>minZ && z < maxZ)
-						{							
-							pcl::PointXYZRGB p;
-							p.x = p_pc[3 * x];
-							p.y = p_pc[3 * x + 1];
-							p.z = z;
+						for (int x = 0; x < pc.cols; x++)
+						{
+							float z = p_pc[3*x+2];
 
-							/*p.b = p_bgr[3 * x];
-							p.g = p_bgr[3 * x + 1];
-							p.r = p_bgr[3 * x + 2];*/
+							if (z>minZ && z < maxZ)
+							{							
+								pcl::PointXYZRGB p;
+								p.x = p_pc[3 * x];
+								p.y = p_pc[3 * x + 1];
+								p.z = z;
 
-							p.b = 0;
-							p.g = j*125;
-							p.r = 255;
+								/*p.b = p_bgr[3 * x];
+								p.g = p_bgr[3 * x + 1];
+								p.r = p_bgr[3 * x + 2];*/
 
-							tmp_pc->push_back(p);											
-						}		
+								p.b = 0;
+								p.g = j*125;
+								p.r = 255;
+
+								tmp_pc->push_back(p);											
+							}		
+						}
 					}
 				}
 				
 				pcl_pcVec.push_back(tmp_pc);
+
+				//cout<<j<<" size "<<tmp_pc->size()<<"\n";
 			}
 
 			//std::cout << "copy to pcl:" << ((double)getTickCount() - t1) / getTickFrequency() << std::endl;
@@ -1838,8 +1923,6 @@ int main(int argc , char** argv)
 				pcViewer->removeAllPointClouds(0);
 			}
 #endif
-
-		
 
 			// outlier removal
 			pcl::StatisticalOutlierRemoval<pcl::PointXYZRGB> sorf;
@@ -1872,8 +1955,8 @@ int main(int argc , char** argv)
 				Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
 
 				if(cameraType == PG)
-				for (int k = i * 2 - 1; k >= 0; k--)
-				{					
+				for (int k = i * 2 - 1; k >= 0; k--) {					
+				
 					cv::Mat translation = pt.stereoArrayParamVec[5 * plantSide + k]._T;
 					
 					cv::Mat rotation = pt.stereoArrayParamVec[5 * plantSide + k]._R;
@@ -1889,8 +1972,8 @@ int main(int argc , char** argv)
 
 					transform = transform*transMat;					
 				}
-				else if(cameraType == CANON && i==1)
-				{
+				else if(cameraType == CANON && i==1) {
+				
 					cv::Mat translation = pt.stereoArrayParamVec[1]._T;
 					
 					cv::Mat rotation = pt.stereoArrayParamVec[1]._R;
@@ -1902,14 +1985,11 @@ int main(int argc , char** argv)
 						transform(y, 3) = translation.at<double>(y, 0);
 				}
 
-				
 
 				Eigen::Matrix4f inverse = transform.inverse();
 				pcl_pcVec[i]->clear();
 				pcl::transformPointCloud(*pc_plant, *pcl_pcVec[i], inverse);		
 				std::cout<<"cloud size "<<i<<":"<<pcl_pcVec[i]->points.size()<<std::endl;
-
-				
 				
 				// not enough points, remove it			
 				if(pcl_pcVec[i]->points.size()<4000)
@@ -1979,7 +2059,6 @@ int main(int argc , char** argv)
 			//	for(int i=1; i<pcl_pcVec.size(); i++)
 			//	{
 			/*
-
 					pcl::IterativeClosestPoint<pcl::PointXYZRGB, pcl::PointXYZRGB> icp;
   					icp.setInputSource(pcl_pcVec[1]);
   					icp.setInputTarget(pcl_pcVec[0]);
@@ -2010,8 +2089,8 @@ int main(int argc , char** argv)
 			for(int i=0; i<pcl_pcVec.size(); i++)
 				pointCloudSize += pcl_pcVec[i]->points.size();
 
-			if(pointCloudSize < 4000)
-			{
+			if(pointCloudSize < 4000) {
+			
 				std::cout<<"Not enough data points"<<std::endl;
 				continue;
 			}
@@ -2127,9 +2206,7 @@ int main(int argc , char** argv)
 				pass.setInputCloud(pc_tmp);
 				pass.filter(*pc_btmPart);
 				for(int i=0; i<pc_btmPart->points.size(); i++)
-				{
 					pc_btmPart->points[i].b = 255;
-				}
 
 				Eigen::Matrix4f baseTemplateTransform;
 				pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_transformedTemplate(new pcl::PointCloud<pcl::PointXYZRGB>);
@@ -2155,7 +2232,7 @@ int main(int argc , char** argv)
 					pcViewer->addPointCloud(pc_baseTemplate, "init template", 0);
 
 					pcViewer->addPointCloud(pc_btmPart, "btmPart", 0);
-					pcViewer->spinOnce(pcl_view_time);
+					//pcViewer->spinOnce(pcl_view_time);
 					pcViewer->addPointCloud(pc_transformedTemplate, "template", 0);
 					pcViewer->spinOnce(pcl_view_time);
 					pcViewer->removePointCloud("init template", 0);
@@ -2257,14 +2334,14 @@ int main(int argc , char** argv)
 					Eigen::Vector3f point(pcl_pcVec[0]->points[i].x, pcl_pcVec[0]->points[i].y, pcl_pcVec[0]->points[i].z);
 					point = point -20.f*v2 - pointOnPlane;
 
-					if(point.dot(cross) < 0.0f && point.dot(crossBack) < 0.0f)
-					{
+					if(point.dot(cross) < 0.0f && point.dot(crossBack) < 0.0f) {
+					
 						// plant points
 						pc_tmp->push_back(pcl_pcVec[0]->points[i]);
 						//pc_btmPart->points[i].g = 255;
 					}
-					else 
-					{
+					else {
+					
 						pcl_pcVec[0]->points[i].b = 200;
 						pcl_pcVec[0]->points[i].g = 200;
 						pc_soil->push_back(pcl_pcVec[0]->points[i]);
@@ -2316,28 +2393,9 @@ int main(int argc , char** argv)
 				continue;
 			}
 
-
 			// vegetation bounding box
 			pcl::PointXYZRGB min_point_AABB;
 			pcl::PointXYZRGB max_point_AABB;
-
-			// simple soil segment
-#if 0			
-			pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_inlierOfSoilPlane(new pcl::PointCloud<pcl::PointXYZRGB>());
-			
-			// cut out bottom part of btm point cloud
-			pcl::PassThrough<pcl::PointXYZRGB> pass;
-			pass.setInputCloud(pcl_pcVec[0]);
-			pass.setFilterFieldName("x");			
-			pass.setFilterLimits(-3000., pc_p_param.soilHeight[plantSide]);
-			pass.setFilterLimitsNegative(false);
-			pass.filter(*pc_inlierOfSoilPlane);
-			pc_tmp->clear();
-			pass.setFilterLimitsNegative(true);
-			pass.filter(*pc_tmp);
-			pcl_pcVec[0]->clear();
-			*pcl_pcVec[0] += *pc_tmp;
-#endif
 
 			
 			// ransac fit soil plane, 
@@ -2659,8 +2717,6 @@ int main(int argc , char** argv)
 #endif
 
 #if 0
-			
-			
 			//pcViewer->addPointCloud(pc_baseTemplate, "template", 0);
 			//pcViewer->addPointCloud(pc_transformedTemplate, "icp template", 0);
 
@@ -2685,8 +2741,6 @@ int main(int argc , char** argv)
 			pfe.computeSlicedSubPointCloudVec(pc_tmp, numSubBoxUsed, sliceAxis);
 			
 			// DENSITY WEIGHTED MEDIAN PLANT HEIGHT
-			
-
 			float weightedMedianHeight = 0;
 			float weightedMedianWidth = 0;
 
@@ -2710,13 +2764,6 @@ int main(int argc , char** argv)
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr pc_outsideAABB(new pcl::PointCloud<pcl::PointXYZRGB>);
 
 			pfe.updateBoundingBox(pcl_pcVec, min_point_AABB, max_point_AABB, pc_outsideAABB);
-
-			/*for(int i=0; i<pc_outsideAABB->points.size(); i++)
-			{
-				pc_outsideAABB->points[i].r=255;
-				pc_outsideAABB->points[i].g=255;
-				pc_outsideAABB->points[i].b=255;
-			}*/
 
 			std::cout<<"outside size:"<<pc_outsideAABB->points.size()<<std::endl;
 
@@ -2751,8 +2798,6 @@ int main(int argc , char** argv)
 			pc_tmp->clear();
 			for(int i=0; i<pcl_pcVec.size(); i++)
 				*pc_tmp += *pcl_pcVec[i];
-
-			
 
 			// sliced convex hull volume
 			std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> cloudHullVec;
@@ -2860,23 +2905,35 @@ int main(int argc , char** argv)
 			// Moving least square smoothing
 			t1 = (double)cv::getTickCount();
 			pc_tmp->clear();
-			for(int i=0; i<pcl_pcVec.size(); i++)
-				*pc_tmp += *pcl_pcVec[i];
+			for(int i=0; i<pcl_pcVec.size(); i++) *pc_tmp += *pcl_pcVec[i];
+
+		//	pcViewer->addPointCloud(pcl_pcVec[0], "vec0"); pcViewer->spin();
+			
+		//	sorf.setInputCloud(pcl_pcVec[0]);
+			
+		//	sorf.filter(*pc_tmp);
+
+		//	*pc_tmp += *pcl_pcVec[1];
+				
 
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr mls_points(new pcl::PointCloud<pcl::PointXYZRGB>);
-
-
+			
+			pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr mls_points_normal(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+			
 			//pcl::copyPointCloud(*pc_tmp, *mls_points);		
-			pfe.movingLeastSquareSmooth(pc_tmp, mls_points);
-
+			pfe.movingLeastSquareSmooth(pc_tmp, mls_points_normal);
+			
+			pcl::copyPointCloud(*mls_points_normal, *mls_points);
 
 			std::cout<<"size: "<<mls_points->points.size()<<std::endl;
 
 			std::cout << "MLS smoothing:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
+			
+			//pcViewer->addPointCloud(mls_points, "mls"); pcViewer->spin();
 
 			t1 = (double)cv::getTickCount();
 			pcl::PolygonMesh triangles;	
-			pfe.greedyTriangulation(mls_points, triangles);
+			pfe.greedyTriangulation(mls_points_normal, triangles);
 			std::cout << "Normal+Triangulation:" << ((double)cv::getTickCount() - t1) / cv::getTickFrequency() << std::endl;
 
 			// calculate total area
@@ -2972,8 +3029,6 @@ int main(int argc , char** argv)
 				pcViewer->addLine(p_0, p_1, 0.0, 1.0, 0.0, "width"+std::to_string(width_line_id), 0);
 			}
 				
-			
-
 
 			//visualize point cloud		
 			//pcViewer->addPointCloud(pcl_pcVec[0], "pc0", 0);
