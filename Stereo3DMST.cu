@@ -42,6 +42,7 @@ typedef struct { uchar r, g, b; } rgb;
 #include <boost/graph/connected_components.hpp>
 #include <boost/graph/kruskal_min_spanning_tree.hpp>
 #include <boost/graph/prim_minimum_spanning_tree.hpp>
+#include "boost/graph/iteration_macros.hpp"
 
 // setS as edge list enforces no parallel edges, takes extra time to look up though
 typedef boost::adjacency_list < boost::setS, boost::vecS, boost::undirectedS> tree_graph_t;
@@ -52,7 +53,6 @@ typedef std::pair<int, int> tree_edge;
 struct EdgeWeight
 {
 	double weight;
-	double weight2;
 };
 
 struct VertexProperties
@@ -95,24 +95,6 @@ double diff(cv::Mat& r, cv::Mat& g, cv::Mat& b, int x1, int y1, int x2, int y2)
 //	return 255.f*max(max(abs(rf), abs(gf)), abs(bf));
 }
 
-// breath first search of mst
-void aggregateCostFromParent(double* agg_cost, mst_graph_t& mst, std::vector<int>& vertices_vec, std::vector<int>& bfs_order, const int root=0)
-{
-	for(auto& node_id : bfs_order) {
-	
-		const int node_pixel_id = vertices_vec[node_id];
-
-		for(int i=0; i<mst[node_id].num_children; i++)	{
-		
-			int & child_id = mst[node_id].children_indices[i];
-		
-			int & child_pixel_id = vertices_vec[child_id];
-
-			agg_cost[child_pixel_id] = mst[child_id].weight*agg_cost[node_pixel_id] + mst[child_id].weight2*agg_cost[child_pixel_id];
-		}
-	}
-}
-
 struct abc
 {
 	float a;
@@ -137,13 +119,13 @@ float compute3DLabelCost(float* cost_vol, abc& abc, const int pixel_id, const in
 	return (disp_ceil-disp)*cost_vol[disp_floor_int*img_size+pixel_id] + (disp-disp_floor)*cost_vol[disp_ceil_int*img_size+pixel_id];
 }
 
-void aggregateCostFromChildren(mst_vertex_descriptor self, mst_vertex_descriptor parent, mst_graph_t& mst, double* cur_agg_cost,
-				std::vector<int>& vertices_vec, std::vector<int>& bfs_order, float* cost_vol, abc* abc_map, abc& test_label, const int max_disp, const int width, 
-				const int img_size) {
-				
-	for(int i=bfs_order.size()-1; i>0; i--)	{
+void aggregateCostFromChildren(mst_graph_t& mst, double* cur_agg_cost, std::vector<int>& vertices_vec,
+				float* cost_vol, abc* abc_map, abc& test_label, const int max_disp, const int width, const int img_size) {
+			
+	const int size = boost::num_vertices(mst);
 	
-		int & node_id = bfs_order[i];
+	for(int node_id = size-1; node_id>0; node_id--)	{
+	
 		int & parent_id = mst[node_id].parent_idx;
 		int & pixel_id = vertices_vec[node_id];
 		int & parent_pixel_id = vertices_vec[parent_id];	
@@ -151,45 +133,62 @@ void aggregateCostFromChildren(mst_vertex_descriptor self, mst_vertex_descriptor
 		//self
 		cur_agg_cost[pixel_id] += compute3DLabelCost(cost_vol, test_label, pixel_id, max_disp, width, img_size);
 
-		//mst_edge_descriptor edge = boost::edge(parent_id, node_id, mst).first;
-		//cur_agg_cost[parent_pixel_id] += mst[edge].weight*cur_agg_cost[pixel_id];
-		
-		cur_agg_cost[parent_pixel_id] += mst[node_id].weight*cur_agg_cost[pixel_id];	//new
+		cur_agg_cost[parent_pixel_id] += mst[node_id].weight*cur_agg_cost[pixel_id];
 	}
 
-	cur_agg_cost[vertices_vec[bfs_order[0]]] += compute3DLabelCost(cost_vol, test_label, vertices_vec[bfs_order[0]], max_disp, width, img_size);
+	cur_agg_cost[vertices_vec[0]] += compute3DLabelCost(cost_vol, test_label, vertices_vec[0], max_disp, width, img_size);
 }
 
 
+void aggregateCostFromParent(double* agg_cost, mst_graph_t& mst, std::vector<int>& vertices_vec)
+{
+	const int size = boost::num_vertices(mst);
+	
+	for(int node_id = 0; node_id<size; node_id++) {
+	
+		int & node_pixel_id = vertices_vec[node_id];
+
+		for(int i=0; i<mst[node_id].num_children; i++)	{
+		
+			int & child_id = mst[node_id].children_indices[i];
+		
+			int & child_pixel_id = vertices_vec[child_id];
+
+			agg_cost[child_pixel_id] = mst[child_id].weight*agg_cost[node_pixel_id] + mst[child_id].weight2*agg_cost[child_pixel_id];
+		}
+	}
+}
+
 void MSTCostAggregationAndLabelUpdate(double* min_cost, double* agg_cost, mst_graph_t& mst, abc* abc_map, abc& test_label, 
-				      std::vector<int>& vertices_vec, std::vector<int>& bfs_order, float* cost_vol, float* disp_u, const float theta_inv, 
+				      std::vector<int>& vertices_vec, float* cost_vol, float* disp_u,
 				      const int max_disp, const int width, const int height, const int img_size)
 {
 	// zero agg_cost in tree due to OpenMP
 	for(auto& pixel_idx : vertices_vec) agg_cost[pixel_idx] = 0.0;
 
 	// leaf to root cost aggregation
-	aggregateCostFromChildren(0, 0, mst, agg_cost, vertices_vec, bfs_order, cost_vol, abc_map, test_label, max_disp, width, img_size);
+	aggregateCostFromChildren(mst, agg_cost, vertices_vec, cost_vol, abc_map, test_label, max_disp, width, img_size);
 
-	aggregateCostFromParent(agg_cost, mst, vertices_vec, bfs_order);	
+	aggregateCostFromParent(agg_cost, mst, vertices_vec);	
 
 	// update 3d labels
-	for(auto& pixel_idx : vertices_vec)
-	{
-		double cost = agg_cost[pixel_idx];
+	for(auto& pixel_idx : vertices_vec) {
+	
+		double & cost = agg_cost[pixel_idx];
 
-		if( cost < min_cost[pixel_idx] )
-		{
+		if( cost < min_cost[pixel_idx] ) {
+		
 			min_cost[pixel_idx] = cost;
-			abc_map[pixel_idx].a = test_label.a;
-			abc_map[pixel_idx].b = test_label.b;
+
+			abc_map[pixel_idx].a = test_label.a; 
+			abc_map[pixel_idx].b = test_label.b; 
 			abc_map[pixel_idx].c = test_label.c;
 		}			
 	}
 }
 
 
-void LabelToDisp(abc* abc_map, cv::Mat& disp, const int height, const int width, const int max_disp)
+void LabelToDisp(abc* abc_map, std::vector<mst_graph_t>& mst_vec, std::vector<std::vector<int>>& mst_vertices_vec, cv::Mat& disp, const int height, const int width, const int max_disp)
 {
 //	startTimer();
 #pragma omp parallel for
@@ -200,7 +199,6 @@ void LabelToDisp(abc* abc_map, cv::Mat& disp, const int height, const int width,
 	        disp.ptr<float>(0)[i] = max(0.0f, min(1.0f, ( (i % width)*abc_ptr->a + (i / width)*abc_ptr->b + abc_ptr->c )/(max_disp-1.0f) ) );	
 		//disp.ptr<float>(0)[i] = ( (i % width)*abc_ptr->a + (i / width)*abc_ptr->b + abc_ptr->c );			
 	}
-
 //	std::cout<<"label to disp time "<<getTimer()<<"\n";
 }
 /*
@@ -215,8 +213,7 @@ void LabelToDisp(abc* abc_map, cv::Mat& disp, const int height, const int width,
  * num_ccs: number of connected components in the segmentation.
  */
 void segment_image_other_init(cv::Mat& r, cv::Mat& g, cv::Mat& b, std::vector<mst_graph_t>& mst_vec, std::vector<std::vector<int>>& mst_vertices_vec,
-		              tree_graph_t& tree_g, abc* abc_map, std::vector<std::vector<int>>& bfs_order_vec, 
-			      float c, int min_size, const int max_disp, float gamma, const int filter_size=3) 
+		              tree_graph_t& tree_g, abc* abc_map, float c, int min_size, const int max_disp, float gamma, const int filter_size=3) 
 {
 	const int width = r.cols;
 	const int height = r.rows;
@@ -224,7 +221,6 @@ void segment_image_other_init(cv::Mat& r, cv::Mat& g, cv::Mat& b, std::vector<ms
 
 	mst_vec.clear();
 	mst_vertices_vec.clear();
-	bfs_order_vec.clear();
 
 	cv::Mat rs, gs, bs;
 
@@ -390,83 +386,7 @@ void segment_image_other_init(cv::Mat& r, cv::Mat& g, cv::Mat& b, std::vector<ms
 	}
 
 	//std::cout<<"build tree graph time: "<<getTimer()<<"\n";
-
-
-	//startTimer();
-	// build each MST
-	mst_vec.resize( u->num_sets() );
-
-	for(int i = 0; i < num; i++)
-	{
-		if(mst_edge_mask[i] == 1)	//MST edge
-		{
-			const int tree_id = cc_ids[edges[i].b];
-
-			mst_edge_descriptor e = boost::add_edge(id_in_tree[edges[i].a], id_in_tree[edges[i].b], mst_vec[tree_id]).first;
-
-			mst_vec[tree_id][e].weight = exp(-edges[i].w*gamma);	
-			mst_vec[tree_id][e].weight2 = 1.0f - mst_vec[tree_id][e].weight*mst_vec[tree_id][e].weight; 
-		}
-	}
-
-
-	// BFS
-	bfs_order_vec.clear();
-	bfs_order_vec.resize( mst_vec.size() );
-
-	for(int t=0; t<mst_vec.size(); t++)
-	{
-		std::queue<int> vertices_queue;
-
-		//root node
-		vertices_queue.push(0);
-
-		bfs_order_vec[t].push_back(0);
-
-		mst_vec[t][0].parent_idx = 0;
-
-		std::vector<uchar> color(boost::num_vertices(mst_vec[t]), 0); // white
-
-		color[0] = 1;	//gray
 	
-		while( !vertices_queue.empty() )
-		{
-			// parent
-			const int p = vertices_queue.front();	
-
-			vertices_queue.pop();	
-
-			boost::graph_traits<mst_graph_t>::adjacency_iterator ai, a_end;		
-
-			boost::tie(ai, a_end) = boost::adjacent_vertices(p, mst_vec[t]); 
-
-			for (; ai != a_end; ++ai) 	
-			{
-				if(color[*ai] == 0) //white
-				{
-					color[*ai] = 1;	//gray
-
-					// edge between parent and child
-					mst_edge_descriptor e = boost::edge(p, *ai, mst_vec[t]).first;
-
-					vertices_queue.push(*ai);	
-
-					bfs_order_vec[t].push_back(*ai);
-
-					mst_vec[t][*ai].parent_idx = p;
-					
-					mst_vec[t][*ai].weight = mst_vec[t][e].weight;	//new
-					mst_vec[t][*ai].weight2 = mst_vec[t][e].weight2;	//new
-					
-					mst_vec[t][p].children_indices[mst_vec[t][p].num_children++] = *ai;	
-				}
-			}
-		}		
-	}
-
-
-	//std::cout<<"build MSTs time: "<<getTimer()<<"\n";
-
 	//unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
 	//std::default_random_engine generator(seed);
 	std::default_random_engine generator;
@@ -511,6 +431,102 @@ void segment_image_other_init(cv::Mat& r, cv::Mat& g, cv::Mat& b, std::vector<ms
 		}
 	}
 
+	//startTimer();
+	// build each MST
+	mst_vec.resize( u->num_sets() );
+
+	for(int i = 0; i < num; i++)
+	{
+		if(mst_edge_mask[i] == 1)	//MST edge
+		{
+			const int tree_id = cc_ids[edges[i].b];
+
+			mst_edge_descriptor e = boost::add_edge(id_in_tree[edges[i].a], id_in_tree[edges[i].b], mst_vec[tree_id]).first;
+
+			mst_vec[tree_id][e].weight = exp(-edges[i].w*gamma);	
+		}
+	}
+	
+
+	// BFS
+	for(int t=0; t<mst_vec.size(); t++)
+	{
+		std::vector<int> new_mst_vertices(boost::num_vertices(mst_vec[t]));
+		
+		new_mst_vertices[0] = mst_vertices_vec[t][0]; 
+		
+		mst_graph_t new_mst(boost::num_vertices(mst_vec[t]));
+		
+		std::queue<int> new_vertices_queue;
+		
+		new_vertices_queue.push(0);
+		
+		std::queue<int> vertices_queue;
+
+		//root node
+		vertices_queue.push(0);
+
+		mst_vec[t][0].parent_idx = 0;
+		
+		new_mst[0].parent_idx = 0;//new
+		
+		int node_id = 0;//new
+
+		std::vector<uchar> color(boost::num_vertices(mst_vec[t]), 0); // white color
+
+		color[0] = 1;	//gray color
+	
+		while( !vertices_queue.empty() )
+		{
+			// parent
+			const int p = vertices_queue.front();	
+
+			vertices_queue.pop();	
+			
+			const int new_p = new_vertices_queue.front();
+			
+			new_vertices_queue.pop();
+
+			boost::graph_traits<mst_graph_t>::adjacency_iterator ai, a_end;		
+
+			boost::tie(ai, a_end) = boost::adjacent_vertices(p, mst_vec[t]); 
+
+			for (; ai != a_end; ++ai) 	
+			{
+				if(color[*ai] == 0) //white
+				{
+					color[*ai] = 1;	//gray
+					
+					vertices_queue.push(*ai);	
+					
+					new_vertices_queue.push(++node_id);
+					
+					boost::add_edge(new_p, node_id, new_mst);
+					
+					new_mst_vertices[node_id] = mst_vertices_vec[t][*ai];
+					
+					// edge between parent and child
+					mst_edge_descriptor e = boost::edge(p, *ai, mst_vec[t]).first;
+					
+					new_mst[node_id].parent_idx = new_p;
+					
+					new_mst[node_id].weight = mst_vec[t][e].weight;	
+										
+					new_mst[node_id].weight2 = 1.0f - new_mst[node_id].weight*new_mst[node_id].weight;
+					
+					new_mst[new_p].children_indices[new_mst[new_p].num_children++] = node_id;
+				}
+			}
+		}	
+		
+		mst_vec[t] = new_mst;
+		mst_vertices_vec[t] = new_mst_vertices;	
+	}
+
+
+	//std::cout<<"build MSTs time: "<<getTimer()<<"\n";
+
+
 
 #if 0
 	MyData my_data;
@@ -529,13 +545,13 @@ void segment_image_other_init(cv::Mat& r, cv::Mat& g, cv::Mat& b, std::vector<ms
 }
 
 
-void MST_PMS(std::vector<mst_graph_t>& mst_vec, std::vector<std::vector<int>>& mst_vertices_vec, std::vector<std::vector<int>>& bfs_order_vec,
+void MST_PMS(std::vector<mst_graph_t>& mst_vec, std::vector<std::vector<int>>& mst_vertices_vec, /*std::vector<std::vector<int>>& bfs_order_vec,*/
 	     tree_graph_t& tree_g, abc* abc_map, double* min_cost, double* agg_cost, float* cost_vol, float* disp_u, 
-	     const float theta_inv, const int max_disp, const int width, const int height, 
+	     const int max_disp, const int width, const int height, 
 	     const int img_size, std::default_random_engine& generator, 
-	     std::uniform_real_distribution<float>& distribution, const bool norm = false)
+	     std::uniform_real_distribution<float>& distribution)
 {
-	startTimer();
+	//startTimer();
 
 	auto dice = std::bind (distribution, generator);
 
@@ -553,27 +569,25 @@ void MST_PMS(std::vector<mst_graph_t>& mst_vec, std::vector<std::vector<int>>& m
 		for (; ai != a_end; ++ai) 
 		{
 			const int test_pixel_idx = mst_vertices_vec[*ai][(int)((dice()+1.0f)*0.5f*mst_vertices_vec[*ai].size())];
-
+			
 			abc test_label;
 			//mutex.lock();
-			test_label.a = abc_map[test_pixel_idx].a;
-			test_label.b = abc_map[test_pixel_idx].b;	
-			test_label.c = abc_map[test_pixel_idx].c;
+			test_label.a = abc_map[test_pixel_idx].a; test_label.b = abc_map[test_pixel_idx].b; test_label.c = abc_map[test_pixel_idx].c;
 			//mutex.unlock();
 
 			// test label and update
 			MSTCostAggregationAndLabelUpdate(min_cost, agg_cost, mst_vec[tree_id], abc_map, test_label, 
-							 mst_vertices_vec[tree_id], bfs_order_vec[tree_id], cost_vol, disp_u, theta_inv, max_disp, width, 
+							 mst_vertices_vec[tree_id], cost_vol, disp_u, max_disp, width, 
 							 height, img_size);
 		}
 
 		// RANDOM REFINEMENT
 		//std::cout<<"pick a random node in the tree\n";
 		const int test_pixel_idx = mst_vertices_vec[tree_id][std::rand() % mst_vertices_vec[tree_id].size()];
-
+		
 		const float px = (float)(test_pixel_idx % width);
 		const float py = (float)(test_pixel_idx / width);
-
+		
 		abc* test_label_ptr = abc_map + test_pixel_idx;
 
 		const float nz = 1.0f / sqrt(test_label_ptr->a*test_label_ptr->a + test_label_ptr->b*test_label_ptr->b + 1.0f);
@@ -608,12 +622,12 @@ void MST_PMS(std::vector<mst_graph_t>& mst_vec, std::vector<std::vector<int>>& m
 			test_label.c = (rand_nx*px + rand_ny*py + rand_nz*rand_d)/rand_nz;
 
 			MSTCostAggregationAndLabelUpdate(min_cost, agg_cost, mst_vec[tree_id], abc_map, test_label, 
-							 mst_vertices_vec[tree_id], bfs_order_vec[tree_id], cost_vol, disp_u, theta_inv, max_disp, 
+							 mst_vertices_vec[tree_id], cost_vol, disp_u, max_disp, 
 							 width, height, img_size);
 		}			
 	}
 
-//	std::cout<<"time: "<<getTimer()<<"\n";
+	//std::cout<<"time: "<<getTimer()<<"\n";
 }
 
 
@@ -702,6 +716,7 @@ void leftRightConsistencyCheck(float* left, float* right, const int width, const
 void stereo3dmst(std::string left_name, std::string right_name, cv::Mat & leftImg, cv::Mat & rightImg, cv::Mat & leftDisp, 
 		cv::Mat & rightDisp, std::string data_cost="MCCNN_acrt", int Dmax=100) {
 	
+		
 	const int cols = leftImg.cols;
 	const int rows = leftImg.rows;
 	unsigned int imgSize = (unsigned int)cols*rows;
@@ -744,6 +759,8 @@ void stereo3dmst(std::string left_name, std::string right_name, cv::Mat & leftIm
 		std::cout<<"wrong data cost\n";
 		return;
 	}
+	
+	//startTimer();
 	
 	//load mc-cnn raw cost volume, origional range (-1,1)
 	int fd;
@@ -793,9 +810,6 @@ void stereo3dmst(std::string left_name, std::string right_name, cv::Mat & leftIm
 	std::vector<std::vector<int>> left_mst_vertices_vec;
 	std::vector<std::vector<int>> right_mst_vertices_vec;
 
-	std::vector<std::vector<int>> left_bfs_order_vec;
-	std::vector<std::vector<int>> right_bfs_order_vec;
-	
 	tree_graph_t left_tree_g;
 	tree_graph_t right_tree_g;
 
@@ -828,48 +842,62 @@ void stereo3dmst(std::string left_name, std::string right_name, cv::Mat & leftIm
 
 	segment_image_other_init(cvLeftBGR_v[2], cvLeftBGR_v[1], cvLeftBGR_v[0], 
 				 left_mst_vec, left_mst_vertices_vec, left_tree_g, 
-				 left_abc_map, left_bfs_order_vec, 
-				 c, min_cc_size, Dmax, gamma); 
+				 left_abc_map, c, min_cc_size, Dmax, gamma); 
 				 
 	segment_image_other_init(cvRightBGR_v[2], cvRightBGR_v[1], cvRightBGR_v[0],
 				 right_mst_vec, right_mst_vertices_vec, right_tree_g, 
-				 right_abc_map, right_bfs_order_vec,
-				 c, min_cc_size, Dmax, gamma); 
+				 right_abc_map, c, min_cc_size, Dmax, gamma); 
+				 
+
 
 	std::default_random_engine generator;
 	std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
 
 	const int num_iter = 100;
 	
+	//startTimer();
+	
 	for(int i=0; i<num_iter; i++)
 	{
 //		std::cout<<"iter: "<<i+1<<"\n";
 	
-		MST_PMS(left_mst_vec, left_mst_vertices_vec, left_bfs_order_vec, left_tree_g, left_abc_map, left_min_cost.ptr<double>(0), 
+		MST_PMS(left_mst_vec, left_mst_vertices_vec, left_tree_g, left_abc_map, left_min_cost.ptr<double>(0), 
 			left_agg_cost.ptr<double>(0), left_cost_vol_mccnn_w, left_disp_u.ptr<float>(0),
-			0.0f, Dmax, cols, rows, imgSize, generator, distribution);
-
-		if(i%4 == 0 || i == num_iter-1)
+			Dmax, cols, rows, imgSize, generator, distribution);
+#if 1
+		//if(i%4 == 0 || i == num_iter-1)
 		{
-			LabelToDisp(left_abc_map, leftDisp, rows, cols, Dmax);	
+			LabelToDisp(left_abc_map, left_mst_vec, left_mst_vertices_vec, leftDisp, rows, cols, Dmax);	
 			cv::imshow("left a", leftDisp); cv::waitKey(50);
 		}
+#endif
 	}
 
 	for(int i=0; i<num_iter; i++)
 	{
 	//	std::cout<<"iter: "<<i+1<<"\n";
 	
-		MST_PMS(right_mst_vec, right_mst_vertices_vec, right_bfs_order_vec, right_tree_g, right_abc_map, right_min_cost.ptr<double>(0), 
+		MST_PMS(right_mst_vec, right_mst_vertices_vec, right_tree_g, right_abc_map, right_min_cost.ptr<double>(0), 
 			right_agg_cost.ptr<double>(0), right_cost_vol_mccnn_w, right_disp_u.ptr<float>(0),
-			0.0f, Dmax, cols, rows, imgSize, generator, distribution, true);
+			Dmax, cols, rows, imgSize, generator, distribution);
 
-		if(i%4 == 0 || i == num_iter-1)
+#if 1
+		//if(i%4 == 0 || i == num_iter-1)
 		{
-			LabelToDisp(right_abc_map, rightDisp, rows, cols, Dmax);	
+			LabelToDisp(right_abc_map, right_mst_vec, right_mst_vertices_vec, rightDisp, rows, cols, Dmax);	
 			cv::imshow("right a", rightDisp); cv::waitKey(50);
 		}
+#endif
 	}
+	
+	//std::cout<<"time: "<<getTimer()<<"\n";
+
+#if 0
+	LabelToDisp(left_abc_map, left_mst_vec, left_mst_vertices_vec, leftDisp, rows, cols, Dmax);	
+	LabelToDisp(right_abc_map, right_mst_vec, right_mst_vertices_vec, rightDisp, rows, cols, Dmax);	
+	cv::imshow("right a", rightDisp); 
+	cv::imshow("left a", leftDisp); cv::waitKey(0);
+#endif
 
 	leftDisp *= (Dmax-1.f);
 	
@@ -881,4 +909,6 @@ void stereo3dmst(std::string left_name, std::string right_name, cv::Mat & leftIm
 	delete[] right_cost_vol_mccnn_w;
 	delete[] left_abc_map;
 	delete[] right_abc_map;
+	
+	//std::cout<<"time: "<<getTimer()<<"\n";
 }
